@@ -64,7 +64,11 @@ export const primeSounds = (): void => {
     for (const name of Object.keys(SOURCES) as SoundName[]) {
       if (players.has(name)) continue;
       try {
-        players.set(name, createAudioPlayer(SOURCES[name]));
+        // iOS AVPlayer is picky about bundled assets whose type can't be
+        // inferred. `downloadFirst` forces expo-asset to materialize a
+        // local file URI before the player starts (expo-audio has a
+        // built-in workaround for this).
+        players.set(name, createAudioPlayer(SOURCES[name], { downloadFirst: true }));
       } catch (e) {
         void logger.warn('sounds', `prime ${name} failed: ${String(e)}`);
       }
