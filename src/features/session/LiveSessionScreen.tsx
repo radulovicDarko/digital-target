@@ -19,6 +19,7 @@ import { usePairingStore } from '@/state/pairingStore';
 import { useSettingsStore } from '@/state/settingsStore';
 import { useTheme } from '@/theme';
 import type { Hit } from '@/types/session';
+import { getOrCreateClientId } from '@/storage/clientId';
 
 import { LiveTargetCanvas } from './LiveTargetCanvas';
 import { Scoreboard } from './Scoreboard';
@@ -95,6 +96,7 @@ export const LiveSessionScreen = ({
   const replayInFlightRef = useRef(false);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollAttemptRef = useRef(0);
+  const pollClientIdRef = useRef<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [canvasArea, setCanvasArea] = useState({ width: 0, height: 0 });
   const [focusedHitTs, setFocusedHitTs] = useState<number | null>(null);
@@ -212,7 +214,10 @@ export const LiveSessionScreen = ({
       if (cancelled) return;
       const last = lastSeqRef.current ?? 0;
       try {
-        const replay = await api.replayHits(last, 256);
+        if (!pollClientIdRef.current) {
+          pollClientIdRef.current = await getOrCreateClientId();
+        }
+        const replay = await api.replayHits(last, 256, pollClientIdRef.current ?? undefined);
         pollAttemptRef.current = 0;
         setReconnecting(false);
         if (pausedByConnectionRef.current && statusRef.current === 'paused') {

@@ -97,10 +97,10 @@ export const createApiClient = (pairing: PairingRecord) => {
      * seq > `since`, oldest first. Used when the WS gap detector spots a
      * dropped sequence number.
      */
-    async replayHits(since: number, limit = 256) {
+    async replayHits(since: number, limit = 256, clientId?: string) {
       try {
         const r = await http.get('/api/hits/replay', {
-          params: { since, limit, consume: 1 },
+          params: { since, limit, consume: 1, ...(clientId ? { client_id: clientId } : {}) },
         });
         const data = r.data as { hits: unknown[]; since: number; count: number };
         // Validate each hit individually so a single bad row doesn't drop

@@ -275,6 +275,36 @@ class ControlState:
             print(f"[ws] attach peer={peer} client_id={client_id} token={token}")
             return token
 
+    def ensure_attached(self, peer: str, client_id: Optional[str]) -> Optional[int]:
+        """Attachment gate for polling clients.
+
+        Similar to try_attach_ws, but does NOT increment the token for the
+        same client_id. This allows a single device to keep its attachment
+        alive via periodic HTTP polls without forcing churn.
+
+        Returns the current token if the client is (or became) attached,
+        otherwise None.
+        """
+        if not client_id:
+            return None
+        now = time.time()
+        with self._ws_attach_lock:
+            if self._ws_attached and (now - self._ws_last_seen) < self._ws_timeout_s:
+                if self._ws_client_id and client_id == self._ws_client_id:
+                    self._ws_peer = peer
+                    self._ws_last_seen = now
+                    return int(self._ws_token)
+                return None
+            # Stale or empty slot: attach fresh.
+            self._ws_token += 1
+            token = self._ws_token
+            self._ws_attached = True
+            self._ws_peer = peer
+            self._ws_client_id = client_id
+            self._ws_last_seen = now
+            print(f"[attach] http peer={peer} client_id={client_id} token={token}")
+            return int(token)
+
     def ws_token(self) -> int:
         with self._ws_attach_lock:
             return int(self._ws_token)
@@ -551,6 +581,12 @@ class _ControlHandler(BaseHTTPRequestHandler):
             # newer that's still in our 256-slot ring buffer. Optional
             # `limit` caps the response size (default + max 256).
             qs = parse_qs(urlsplit(self.path).query)
+            peer = f"{self.client_address[0]}:{self.client_address[1]}"
+            client_id = qs.get("client_id", [None])[0]
+            token = self.state.ensure_attached(peer, client_id)
+            if token is None:
+                self._json(409, {"error": "already_attached", "ws": self.state.ws_info()})
+                return
             try:
                 since = int(qs.get("since", ["0"])[0])
             except (ValueError, TypeError):
