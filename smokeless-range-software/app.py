@@ -520,18 +520,6 @@ def main():
         shot_cooldown_ms=SHOT_COOLDOWN_MS,
     )
 
-    button_detector = LaserDetector(
-        lower_red_1=LOWER_RED_1,
-        upper_red_1=UPPER_RED_1,
-        lower_red_2=LOWER_RED_2,
-        upper_red_2=UPPER_RED_2,
-        lower_extra=LOWER_PURPLE,
-        upper_extra=UPPER_PURPLE,
-        min_area=MIN_AREA,
-        max_area=MAX_AREA,
-        shot_cooldown_ms=SHOT_COOLDOWN_MS,
-    )
-
     if UNITY_FF:
         unity_sender = UnitySender(
             host=UNITY_HOST,
@@ -549,12 +537,6 @@ def main():
     last_score = None
     last_dist = 0.0
     hit_history = []  # list of (x, y, score)
-
-    # Reset button (bottom-left) - requires 2 consecutive hits
-    btn_w, btn_h = 150, 70
-    reset_hits = 0
-    RESET_HIT_WINDOW_SEC = 3.0  # second hit must arrive within this window
-    last_reset_hit_time = 0.0
 
     # Auto-align state. The bull (dark central disc) is detected every frame
     # and smoothed. Operator tweaks (scale/offset) are loaded once at startup
@@ -932,11 +914,9 @@ def main():
             # Draw past hits (pellet-sized circles)
             scale_px_per_mm = (tx2 - tx1) / TARGET_PAPER_MM if tx2 > tx1 else 1.0
             pellet_r_px = max(2, int(PELLET_DIAMETER_MM / 2.0 * scale_px_per_mm))
-            for hx, hy, hs in hit_history[-30:]:
+            for hx, hy, _hs in hit_history[-30:]:
                 cv2.circle(frame, (hx, hy), pellet_r_px, (0, 255, 255), 1, cv2.LINE_AA)
                 cv2.circle(frame, (hx, hy), 2, (0, 255, 255), -1, cv2.LINE_AA)
-                cv2.putText(frame, str(hs), (hx + pellet_r_px + 2, hy - 4),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1, cv2.LINE_AA)
 
             if detection is not None:
                 raw_x = detection["x"]
@@ -1125,54 +1105,6 @@ def main():
                     2,
                     cv2.LINE_AA
                 )
-
-            draw_scoreboard(frame, total_score, shot_count, last_score, last_dist, frame_w)
-
-            # Reset button bbox (bottom-left)
-            btn_x1 = 15
-            btn_y2 = frame_h - 15
-            btn_x2 = btn_x1 + btn_w
-            btn_y1 = btn_y2 - btn_h
-
-            # Detect laser-shot inside button area (uses cooldown + arming)
-            btn_roi = frame[btn_y1:btn_y2, btn_x1:btn_x2]
-            btn_det, _ = button_detector.detect(btn_roi)
-            laser_on_button = btn_det is not None
-            button_hit_now = laser_on_button and button_detector.should_emit_shot()
-
-            # Drop stale first-hit if window expired
-            if reset_hits == 1 and (time.time() - last_reset_hit_time) > RESET_HIT_WINDOW_SEC:
-                reset_hits = 0
-
-            if button_hit_now:
-                reset_hits += 1
-                last_reset_hit_time = time.time()
-                print(f"Reset button hit {reset_hits}/2")
-
-            if reset_hits >= 2:
-                total_score = 0
-                shot_count = 0
-                last_score = None
-                last_dist = 0.0
-                hit_history.clear()
-                reset_hits = 0
-                print("Score reset by 2 consecutive hits.")
-
-            # Draw button with light-gray semi-transparent background
-            btn_color = (0, 215, 255) if laser_on_button else (180, 180, 180)
-            overlay = frame.copy()
-            cv2.rectangle(overlay, (btn_x1, btn_y1), (btn_x2, btn_y2), (200, 200, 200), -1)
-            cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
-            cv2.rectangle(frame, (btn_x1, btn_y1), (btn_x2, btn_y2), btn_color, 2)
-            cv2.putText(frame, "RESET", (btn_x1 + 18, btn_y1 + 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 3, cv2.LINE_AA)
-            cv2.putText(frame, "RESET", (btn_x1 + 18, btn_y1 + 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1, cv2.LINE_AA)
-            status_txt = f"Hits: {reset_hits}/2"
-            cv2.putText(frame, status_txt, (btn_x1 + 14, btn_y1 + 55),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
-            cv2.putText(frame, status_txt, (btn_x1 + 14, btn_y1 + 55),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
 
             # Calibration debug HUD: shows which calibration path is active so
             # you can immediately see whether paper detection is working.
