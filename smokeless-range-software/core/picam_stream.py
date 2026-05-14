@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from typing import Optional, Tuple
 
 import numpy as np
@@ -50,10 +51,21 @@ class PiCamStream:
         # ---- Autofocus tuning (best-effort) ----
         self._af_supported = False
         self._af_trigger_value = None
+        self._af_mode: str = (os.environ.get("SHOOTERRANGE_PICAM_AF_MODE", "auto") or "auto").lower()
         self._frame_idx = 0
         self._last_af_trigger_ts = 0.0
-        self._blur_check_every = 45  # frames (~0.75s at 60 fps)
-        self._blur_threshold = 30.0
+        try:
+            self._blur_check_every = max(5, int(os.environ.get("SHOOTERRANGE_PICAM_AF_BLUR_EVERY_FRAMES", "45")))
+        except Exception:
+            self._blur_check_every = 45
+        try:
+            self._blur_threshold = float(os.environ.get("SHOOTERRANGE_PICAM_AF_BLUR_THRESHOLD", "30"))
+        except Exception:
+            self._blur_threshold = 30.0
+        try:
+            self._af_refire_sec = float(os.environ.get("SHOOTERRANGE_PICAM_AF_REFIRE_SEC", "2.0"))
+        except Exception:
+            self._af_refire_sec = 2.0
 
     def _try_enable_autofocus(self, cam: "object") -> None:  # noqa: ANN401
         """Best-effort continuous AF.
@@ -61,6 +73,18 @@ class PiCamStream:
         Only works on cameras that expose AF controls (e.g. Camera Module 3).
         Safe no-op on fixed-focus modules.
         """
+        if self._af_mode in ("0", "off", "false", "none"):
+            return
+
+        # First, check whether the camera advertises AF controls.
+        try:
+            cam_controls = getattr(cam, "camera_controls", None)
+            if isinstance(cam_controls, dict) and "AfMode" not in cam_controls:
+                return
+        except Exception:
+            # If we cannot introspect controls, still try setting below.
+            pass
+
         try:
             import libcamera  # type: ignore
 
@@ -69,31 +93,47 @@ class PiCamStream:
                 return
 
             # Prefer enums when available; fall back to common numeric values.
-            af_mode = getattr(getattr(controls, "AfModeEnum", object()), "Continuous", 2)
+            af_mode_auto = getattr(getattr(controls, "AfModeEnum", object()), "Auto", 1)
+            af_mode_cont = getattr(getattr(controls, "AfModeEnum", object()), "Continuous", 2)
             af_range = getattr(getattr(controls, "AfRangeEnum", object()), "Normal", 1)
             af_speed = getattr(getattr(controls, "AfSpeedEnum", object()), "Fast", 2)
             af_trigger = getattr(getattr(controls, "AfTriggerEnum", object()), "Start", 0)
 
-            try:
-                cam.set_controls({
-                    "AfMode": af_mode,
-                    "AfRange": af_range,
-                    "AfSpeed": af_speed,
-                })
-                # Kick an initial focus run.
-                cam.set_controls({"AfTrigger": af_trigger})
-                self._af_supported = True
-                self._af_trigger_value = af_trigger
-                self._last_af_trigger_ts = 0.0
-                print("[picam_stream] autofocus: continuous enabled")
-            except Exception as e:  # noqa: BLE001
-                print(f"[picam_stream] autofocus: controls rejected ({e})")
-        except Exception:
-            # libcamera python module not present / not a Pi.
-            return
+            mode = self._af_mode
+            if mode == "continuous":
+                af_mode = af_mode_cont
+            else:
+                # Default: auto. AF_TRIGGER is meaningful here.
+                af_mode = af_mode_auto
+
+            cam.set_controls({
+                "AfMode": af_mode,
+                "AfRange": af_range,
+                "AfSpeed": af_speed,
+            })
+
+            self._af_supported = True
+            self._af_trigger_value = af_trigger
+            self._last_af_trigger_ts = 0.0
+            print(f"[picam_stream] autofocus: enabled mode={mode}")
+
+            # Kick an initial focus run only in auto mode.
+            if mode != "continuous":
+                try:
+                    cam.set_controls({"AfTrigger": af_trigger})
+                except Exception:
+                    # Some stacks warn when triggering is unsupported; ignore.
+                    pass
+        except Exception as e:  # noqa: BLE001
+            print(f"[picam_stream] autofocus: enable failed ({e})")
+            self._af_supported = False
+            self._af_trigger_value = None
 
     def _maybe_retrigger_af(self, frame: np.ndarray) -> None:
         if not self._af_supported or self._cam is None:
+            return
+        # In continuous AF mode, do not spam AfTrigger (libcamera often warns).
+        if self._af_mode == "continuous":
             return
         self._frame_idx += 1
         if self._frame_idx % self._blur_check_every != 0:
@@ -110,8 +150,8 @@ class PiCamStream:
         if v >= self._blur_threshold:
             return
         # Throttle triggers so AF isn't spammed.
-        now = float(cv2.getTickCount() / cv2.getTickFrequency())
-        if (now - self._last_af_trigger_ts) < 2.0:
+        now = time.time()
+        if (now - self._last_af_trigger_ts) < float(self._af_refire_sec):
             return
         trig = self._af_trigger_value
         if trig is None:
