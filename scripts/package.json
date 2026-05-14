@@ -1,0 +1,12 @@
+{
+  "name": "shooter-range-icon-tools",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local-only tools to regenerate icon PNGs from assets/appicons/. Not bundled into the app, not installed by EAS.",
+  "scripts": {
+    "icons": "node generate-icons.js"
+  },
+  "dependencies": {
+    "sharp": "^0.34.5"
+  }
+}

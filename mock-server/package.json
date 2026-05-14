@@ -1,0 +1,14 @@
+{
+  "name": "shooter-range-mock",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "uuid": "^10.0.0",
+    "ws": "^8.18.0"
+  }
+}
