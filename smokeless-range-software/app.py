@@ -2,6 +2,7 @@ import math
 import os
 import sys
 import time
+from collections import deque
 
 import cv2
 import numpy as np
@@ -47,6 +48,10 @@ from config import (
     AUTH_TOKEN,
     APP_VERSION,
     MJPEG_QUALITY,
+    CAL_HUD_ENABLED,
+    HIT_LOG_ENABLED,
+    HIT_LOG_EVERY,
+    HIT_LOG_FORMAT,
 )
 
 import config as _config
@@ -61,8 +66,6 @@ from core.calibration_tweaks import (
     load_tweaks,
     save_tweaks,
 )
-
-
 def clamp01(v):
     return max(0.0, min(1.0, v))
 
@@ -79,8 +82,6 @@ def map_point_to_target(x, y, x1, y1, x2, y2):
     ny = (y - y1) / float(y2 - y1)
 
     return clamp01(nx), clamp01(ny)
-
-
 BULL_TO_PAPER_RATIO = TARGET_PAPER_MM / 59.5  # bull (rings 7-10) is 59.5 mm
 BULL_DIAMETER_MM = 59.5
 
@@ -372,42 +373,6 @@ def draw_target_rings(frame, x1, y1, x2, y2, color=(255, 0, 0)):
     cv2.drawMarker(frame, (cx, cy), color, cv2.MARKER_CROSS, 12, 1)
 
 
-def draw_scoreboard(frame, total, shots, last_score, last_dist, frame_w):
-    panel_w = 230
-    panel_h = 130
-    x0 = frame_w - panel_w - 10
-    y0 = 10
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (x0, y0), (x0 + panel_w, y0 + panel_h), (0, 0, 0), -1)
-    cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
-    cv2.rectangle(frame, (x0, y0), (x0 + panel_w, y0 + panel_h), (0, 215, 255), 2)
-
-    cv2.putText(frame, "SCORE", (x0 + 12, y0 + 28),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 215, 255), 2, cv2.LINE_AA)
-    cv2.putText(frame, str(total), (x0 + 110, y0 + 60),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 3, cv2.LINE_AA)
-    avg = (total / shots) if shots > 0 else 0.0
-    cv2.putText(frame, f"Shots: {shots}  Avg: {avg:.2f}", (x0 + 12, y0 + 90),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
-    last_txt = "Last: -" if last_score is None else f"Last: {last_score}  ({last_dist:.0f}px)"
-    cv2.putText(frame, last_txt, (x0 + 12, y0 + 115),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
-
-
-def draw_multiline_text(frame, lines, x, y, color=(255, 255, 255), scale=0.6, thickness=2, line_gap=24):
-    for i, line in enumerate(lines):
-        cv2.putText(
-            frame,
-            line,
-            (x, y + i * line_gap),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            scale,
-            color,
-            thickness,
-            cv2.LINE_AA
-        )
-
-
 def build_paper_corners_and_homography(bull_geom, ring_scale_axes, keystone_h, keystone_v,
                                        paper_rotation_deg=0.0, paper_scale=1.0,
                                        keystone_d1=0.0, keystone_d2=0.0):
@@ -536,7 +501,12 @@ def main():
     shot_count = 0
     last_score = None
     last_dist = 0.0
-    hit_history = []  # list of (x, y, score)
+    # Only used for drawing the last few hit markers; keep it bounded so
+    # headless/systemd runs don't accumulate unbounded history.
+    hit_history = deque(maxlen=30)  # (x, y)
+
+    # Headless log throttle counter.
+    hit_log_n = 0
 
     # Auto-align state. The bull (dark central disc) is detected every frame
     # and smoothed. Operator tweaks (scale/offset) are loaded once at startup
@@ -914,7 +884,7 @@ def main():
             # Draw past hits (pellet-sized circles)
             scale_px_per_mm = (tx2 - tx1) / TARGET_PAPER_MM if tx2 > tx1 else 1.0
             pellet_r_px = max(2, int(PELLET_DIAMETER_MM / 2.0 * scale_px_per_mm))
-            for hx, hy, _hs in hit_history[-30:]:
+            for hx, hy in hit_history:
                 cv2.circle(frame, (hx, hy), pellet_r_px, (0, 255, 255), 1, cv2.LINE_AA)
                 cv2.circle(frame, (hx, hy), 2, (0, 255, 255), -1, cv2.LINE_AA)
 
@@ -1049,10 +1019,15 @@ def main():
                     is_real_shot = on_paper and hit_dist <= (paper_half_mm + 3.0)
 
                     if not is_real_shot:
-                        print(
-                            f"DROP raw=({raw_x},{raw_y}) dist={hit_dist:.1f}mm "
-                            f"area={area} score={hit_score} (off paper)"
-                        )
+                        if not headless or HIT_LOG_ENABLED:
+                            # In headless mode this can be noisy; keep it behind HIT_LOG_ENABLED.
+                            if headless:
+                                hit_log_n += 1
+                            if (not headless) or (hit_log_n % HIT_LOG_EVERY == 0):
+                                print(
+                                    f"DROP raw=({raw_x},{raw_y}) dist={hit_dist:.1f}mm "
+                                    f"area={area} score={hit_score} (off paper)"
+                                )
                     else:
                         # Hits outside ring 1 (score 0) still count: a fired
                         # shot is a fired shot, just worth zero points.
@@ -1060,18 +1035,31 @@ def main():
                         shot_count += 1
                         last_score = hit_score
                         last_dist = hit_dist
-                        hit_history.append((raw_x, raw_y, hit_score))
+                        hit_history.append((raw_x, raw_y))
 
-                        kind = "MISS" if hit_score == 0 else "HIT"
-                        print(
-                            f"{kind} raw=({raw_x},{raw_y}) "
-                            f"raw_norm=({raw_nx:.4f},{raw_ny:.4f}) "
-                            f"send_norm=({send_nx:.4f},{send_ny:.4f}) "
-                            f"unity_norm=({send_nx:.4f},{unity_ny:.4f}) "
-                            f"area={area} score={hit_score} dist={hit_dist:.1f}/{hit_maxr:.1f} "
-                            f"total={total_score} shots={shot_count} "
-                            f"inside_roi={inside_roi} calibrated={calibrated}"
-                        )
+                        # Per-hit console logging can overwhelm journald on headless Pi.
+                        # Default behavior is unchanged (enabled, every hit, full format).
+                        do_log = (not headless) or HIT_LOG_ENABLED
+                        if do_log:
+                            if headless:
+                                hit_log_n += 1
+                            if (not headless) or (hit_log_n % HIT_LOG_EVERY == 0):
+                                kind = "MISS" if hit_score == 0 else "HIT"
+                                if headless and HIT_LOG_FORMAT == "short":
+                                    print(
+                                        f"{kind} score={hit_score} dist={hit_dist:.1f}mm "
+                                        f"nx={send_nx:.4f} ny={send_ny:.4f} area={area}"
+                                    )
+                                else:
+                                    print(
+                                        f"{kind} raw=({raw_x},{raw_y}) "
+                                        f"raw_norm=({raw_nx:.4f},{raw_ny:.4f}) "
+                                        f"send_norm=({send_nx:.4f},{send_ny:.4f}) "
+                                        f"unity_norm=({send_nx:.4f},{unity_ny:.4f}) "
+                                        f"area={area} score={hit_score} dist={hit_dist:.1f}/{hit_maxr:.1f} "
+                                        f"total={total_score} shots={shot_count} "
+                                        f"inside_roi={inside_roi} calibrated={calibrated}"
+                                    )
 
                         send_detection["score"] = hit_score
                         if unity_sender is not None:
@@ -1106,23 +1094,24 @@ def main():
                     cv2.LINE_AA
                 )
 
-            # Calibration debug HUD: shows which calibration path is active so
-            # you can immediately see whether paper detection is working.
-            hud_txt = (
-                f"CAL: {calib_source}  "
-                f"s={tweaks.scale_factor:.3f}  "
-                f"a={tweaks.aspect_ratio:.3f}  "
-                f"r={tweaks.rotation_deg:+.1f}°  "
-                f"o=({tweaks.offset_x_mm:+.1f},{tweaks.offset_y_mm:+.1f})mm"
-            )
-            hud_color = (0, 255, 0) if calib_source == "refined" else (
-                (0, 200, 255) if "bull" in calib_source or calib_source == "frozen"
-                else (0, 0, 255)
-            )
-            cv2.putText(frame, hud_txt, (20, frame_h - 20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
-            cv2.putText(frame, hud_txt, (20, frame_h - 20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, hud_color, 1, cv2.LINE_AA)
+            if CAL_HUD_ENABLED:
+                # Calibration debug HUD: shows which calibration path is active so
+                # you can immediately see whether paper detection is working.
+                hud_txt = (
+                    f"CAL: {calib_source}  "
+                    f"s={tweaks.scale_factor:.3f}  "
+                    f"a={tweaks.aspect_ratio:.3f}  "
+                    f"r={tweaks.rotation_deg:+.1f}°  "
+                    f"o=({tweaks.offset_x_mm:+.1f},{tweaks.offset_y_mm:+.1f})mm"
+                )
+                hud_color = (0, 255, 0) if calib_source == "refined" else (
+                    (0, 200, 255) if "bull" in calib_source or calib_source == "frozen"
+                    else (0, 0, 255)
+                )
+                cv2.putText(frame, hud_txt, (20, frame_h - 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(frame, hud_txt, (20, frame_h - 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, hud_color, 1, cv2.LINE_AA)
 
             # Only compute resized display buffers when we actually need them.
             want_preview = control_state is not None and control_state.preview_wanted()

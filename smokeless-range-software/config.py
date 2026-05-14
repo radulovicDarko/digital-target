@@ -52,6 +52,28 @@ def is_headless() -> bool:
     # auto: assume headless when no display server is reachable.
     return not (_os.environ.get("DISPLAY") or _os.environ.get("WAYLAND_DISPLAY"))
 
+
+def _env_flag(name: str, default: bool = True) -> bool:
+    v = _os.environ.get(name)
+    if v is None:
+        return default
+    v = v.strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
+def _env_int(name: str, default: int) -> int:
+    v = _os.environ.get(name)
+    if v is None:
+        return default
+    try:
+        return int(v)
+    except Exception:
+        return default
+
 # Path to ffmpeg binary. By default uses whatever is on PATH (works on macOS/Linux
 # after `brew install ffmpeg` or `apt install ffmpeg`, and on Windows if ffmpeg.exe
 # is on PATH). Override with a full path if needed, e.g.:
@@ -134,3 +156,39 @@ AUTH_TOKEN = "dev-token"
 APP_VERSION = "0.1.0"
 # JPEG quality for the mobile preview stream (1-100). Lower = less bandwidth.
 MJPEG_QUALITY = 70
+
+# ---------------------------------------------------------------------------
+# Debug overlays & logging (systemd/journald friendly)
+#
+# These are read by app.py.
+# Defaults are tuned for "quiet" headless service mode (no journald flood),
+# while preserving existing behavior when running with a GUI.
+#
+#   SHOOTERRANGE_CAL_HUD=0/1
+#     - Controls the "CAL:" debug HUD overlay drawn into the annotated frame.
+#
+#   SHOOTERRANGE_HIT_LOG=0/1
+#     - Controls per-hit console prints in headless mode.
+#
+#   SHOOTERRANGE_HIT_LOG_EVERY=N
+#     - Throttle headless logging: print every N-th hit/drop event.
+#
+#   SHOOTERRANGE_HIT_LOG_FORMAT=full|short
+#     - Headless-only. "short" logs compact hit lines.
+# ---------------------------------------------------------------------------
+_HEADLESS_RESOLVED = is_headless()
+
+CAL_HUD_ENABLED = _env_flag("SHOOTERRANGE_CAL_HUD", default=True)
+
+HIT_LOG_ENABLED = _env_flag(
+    "SHOOTERRANGE_HIT_LOG",
+    default=(not _HEADLESS_RESOLVED),
+)
+HIT_LOG_EVERY = max(
+    1,
+    _env_int("SHOOTERRANGE_HIT_LOG_EVERY", 10 if _HEADLESS_RESOLVED else 1),
+)
+HIT_LOG_FORMAT = (
+    _os.environ.get("SHOOTERRANGE_HIT_LOG_FORMAT", "short" if _HEADLESS_RESOLVED else "full")
+    or "full"
+).strip().lower()
