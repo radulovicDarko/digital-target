@@ -9,16 +9,6 @@ jest.mock('expo-secure-store', () => ({
   deleteItemAsync: jest.fn(async () => undefined),
 }));
 
-jest.mock('expo-sqlite', () => ({
-  openDatabaseAsync: jest.fn(async () => ({
-    execAsync: jest.fn(),
-    runAsync: jest.fn(),
-    getAllAsync: jest.fn(async () => []),
-    getFirstAsync: jest.fn(async () => null),
-    closeAsync: jest.fn(),
-  })),
-}));
-
 jest.mock('expo-haptics', () => ({
   ImpactFeedbackStyle: { Light: 'l', Medium: 'm', Heavy: 'h' },
   impactAsync: jest.fn(async () => undefined),

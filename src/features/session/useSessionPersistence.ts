@@ -13,10 +13,8 @@
 import { useCallback } from 'react';
 
 import { isDemoPairing } from '@/api/demo';
-import { createBackendClient, type RemoteSessionInput } from '@/api/backend';
 import { useAuthStore } from '@/state/authStore';
 import { usePairingStore } from '@/state/pairingStore';
-import { demoStorage, type StoredDemoSession } from '@/storage/demoStorage';
 import { logger } from '@/storage/logger';
 import type { Hit } from '@/types/session';
 
@@ -44,72 +42,17 @@ export const useSessionPersistence = () => {
 
   const saveSession = useCallback(
     async (input: SaveSessionInput): Promise<SaveResult> => {
-      // Demo Range — keep using SecureStore so the user can browse demo
-      // sessions in History without a backend round-trip.
-      if (isDemoPairing(active)) {
-        const record: StoredDemoSession = {
-          id: input.id,
-          shooter_id: user?.id ?? 'guest',
-          discipline: input.discipline,
-          started_at: input.startedAt,
-          ended_at: input.endedAt,
-          total_score: input.totalScore,
-          shot_count: input.shotCount,
-          hits: input.hits.map((h) => ({
-            ts: h.ts,
-            x_norm: h.xNorm,
-            y_norm: h.yNorm,
-            score: h.score,
-            ring: h.ring,
-            x_mm: h.xMm,
-            y_mm: h.yMm,
-            dist_mm: h.distMm,
-            is_inner_ten: h.isInnerTen,
-          })),
-          shots_per_target: input.shotsPerTarget,
-          targets_per_session: input.targetsPerSession,
-        };
-        const existing = await demoStorage.load();
-        // Replace any prior record with the same id (defensive — auto-end
-        // might fire twice in theory).
-        const next = [record, ...existing.filter((s) => s.id !== record.id)];
-        await demoStorage.save(next);
-        return { kind: 'demoLocal', ok: true };
-      }
-
-      // Guest user → nothing to save remotely. The summary modal still
-      // shows their numbers; they just won't appear in History after they
-      // leave the screen.
-      if (guest || !user) {
-        return { kind: 'guestSkipped' };
-      }
-
-      // Logged-in user → POST the session to the remote backend. Soft-
-      // failure: we still resolve so the UI can dismiss the modal even if
-      // the backend is unreachable. The local view of the session is
-      // available until the user navigates away.
+      // For now we do NOT persist history anywhere (no SQLite, no demo
+      // storage, no remote backend). We'll introduce a dedicated endpoint
+      // later; this function keeps the call-site stable.
       try {
-        // TODO: replace 'guest' fallback once backend issues real tokens.
-        const token = (user as { token?: string }).token ?? 'placeholder-token';
-        const client = createBackendClient(token);
-        const payload: RemoteSessionInput = {
-          id: input.id,
-          shooter_id: user.id,
-          discipline: input.discipline,
-          started_at: input.startedAt,
-          ended_at: input.endedAt,
-          total_score: input.totalScore,
-          shot_count: input.shotCount,
-          shots_per_target: input.shotsPerTarget,
-          targets_per_session: input.targetsPerSession,
-          hits: input.hits,
-        };
-        await client.saveSession(payload);
-        return { kind: 'remote', ok: true };
+        const who = guest || !user ? 'guest' : 'user';
+        const demo = isDemoPairing(active) ? 'demo' : 'real';
+        void logger.info('persist', `skip saveSession (disabled) who=${who} pairing=${demo} hits=${input.hits.length}`);
       } catch (e) {
-        void logger.warn('persist', `remote save failed: ${String(e)}`);
-        return { kind: 'remote', ok: false };
+        void logger.warn('persist', `skip saveSession log failed: ${String(e)}`);
       }
+      return { kind: 'guestSkipped' };
     },
     [active, guest, user],
   );

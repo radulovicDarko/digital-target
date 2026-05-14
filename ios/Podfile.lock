@@ -97,8 +97,6 @@ PODS:
     - ExpoModulesCore
   - ExpoSplashScreen (55.0.19):
     - ExpoModulesCore
-  - ExpoSQLite (55.0.15):
-    - ExpoModulesCore
   - ExpoSystemUI (55.0.16):
     - ExpoModulesCore
   - EXStructuredHeaders (55.0.2)
@@ -2295,7 +2293,6 @@ DEPENDENCIES:
   - ExpoSharing (from `../node_modules/expo-sharing/ios`)
   - ExpoSpeech (from `../node_modules/expo-speech/ios`)
   - ExpoSplashScreen (from `../node_modules/expo-splash-screen/ios`)
-  - ExpoSQLite (from `../node_modules/expo-sqlite/ios`)
   - ExpoSystemUI (from `../node_modules/expo-system-ui/ios`)
   - EXStructuredHeaders (from `../node_modules/expo-structured-headers/ios`)
   - EXUpdates (from `../node_modules/expo-updates/ios`)
@@ -2437,8 +2434,6 @@ EXTERNAL SOURCES:
     :path: "../node_modules/expo-speech/ios"
   ExpoSplashScreen:
     :path: "../node_modules/expo-splash-screen/ios"
-  ExpoSQLite:
-    :path: "../node_modules/expo-sqlite/ios"
   ExpoSystemUI:
     :path: "../node_modules/expo-system-ui/ios"
   EXStructuredHeaders:
@@ -2635,13 +2630,12 @@ SPEC CHECKSUMS:
   ExpoSharing: 5acc9d78894386d31b862b12ed1cebe7dce74e68
   ExpoSpeech: 7f5d4a94aea1fbc509cf4ab2649bc2e3f05ea15e
   ExpoSplashScreen: 43517d54a0f90d381c80deda859aa6087e80884b
-  ExpoSQLite: f63db535d24c59722971241ea9ade2a878dfabea
   ExpoSystemUI: f0f31e6aea8f76b549a463483bdeeb1dcb8a5593
   EXStructuredHeaders: 93ad4f31a2eec124428675e28aca11de243ee1e4
   EXUpdates: 8572c86e819d38e54ca699f7b4ef0fe6577cdf54
   EXUpdatesInterface: 4c11f4d1594526258f14d09817dc407acbf24e3b
   FBLazyVector: 427fa1856a481856091061293ce865a75aa4f20f
-  hermes-engine: 44f848610b0a8531ef83f09ab1130e08e9e7755a
+  hermes-engine: 7a5c5ab21e1dc84f7953ab16a233117c89f1f7d5
   RCTDeprecation: 9502b5eb8e3c9eb75ff5a333b2c591bab9d91e28
   RCTRequired: 0268a5d86aef1defea2e04289d74fdf3570197c1
   RCTSwiftUI: cff211c5e4d94e491dda240d663b8effd25296d7
@@ -2651,7 +2645,7 @@ SPEC CHECKSUMS:
   React: 9b033c7a99e1c8eec40960b6b2e6844e011e8bd1
   React-callinvoker: f64c8d57f45173835b6b9891cda27f1625551972
   React-Core: 341863a2597c4a2320f916b4232d280cb8a28e4b
-  React-Core-prebuilt: 24f215bedb191af53b2abbbb8a116bdfb5628057
+  React-Core-prebuilt: f12d5ec4ff45dbec4a7a679d7adfc7b33de77d8f
   React-CoreModules: 9370769c9b2b1732c58960687f4d50d9d3510efc
   React-cxxreact: 41ae74bd9eab80af9c5da6a9b4934eb97e2c7569
   React-debug: eb0f19ff879ad3870dc760b6c21ad56cbb3e4b98
@@ -2714,7 +2708,7 @@ SPEC CHECKSUMS:
   ReactAppDependencyProvider: 3ec8fc5d32ad422f5b805523a5a5ea5556d8b3a2
   ReactCodegen: 169fa6c4ad3c3065f98fa2364bf95e9a21c3afec
   ReactCommon: ba28cd4e7d9e24014d2772a80e32da020c732b00
-  ReactNativeDependencies: a6f05d28a24c88f83d20815b7b726340bdf85da4
+  ReactNativeDependencies: ed7e12202f81c04b5134d7d4f6bfba9cff15fc65
   RNGestureHandler: 0ea8153746a92b3744d4eaadade647debedf646e
   RNReanimated: 86e5991396f1aa514db90d6c79d4c3e37a37bb10
   RNScreens: 14243fa0d9842ffa7f8bb2d00b6c3cfd3ca817e8

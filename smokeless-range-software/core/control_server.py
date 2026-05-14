@@ -37,6 +37,7 @@ import base64
 import hashlib
 import json
 import queue
+import socket
 import struct
 import threading
 import time
@@ -712,6 +713,10 @@ class _ControlHandler(BaseHTTPRequestHandler):
             return
 
         sock = self.connection
+        try:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except Exception:
+            pass
         sock.settimeout(0.5)
 
         sub = self.state.add_subscriber()
@@ -775,11 +780,11 @@ class _ControlHandler(BaseHTTPRequestHandler):
                 # Try a non-blocking peek for control frames.
                 try:
                     data = sock.recv(2)
-                except OSError:
-                    # Timeout/no data — keep looping but enforce stale timeout.
-                    if drained:
-                        continue
+                except socket.timeout:
+                    # No inbound frames right now.
                     continue
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    return
                 if not data:
                     return
                 if len(data) < 2:

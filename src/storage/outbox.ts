@@ -1,5 +1,3 @@
-import { getDb } from './db';
-
 export type OutboxItem = {
   id: number;
   method: string;
@@ -16,49 +14,44 @@ type EnqueueArgs = {
   body?: unknown;
 };
 
+let nextId = 1;
+let items: OutboxItem[] = [];
+
 export const outbox = {
   async enqueue({ method, url, body }: EnqueueArgs): Promise<number> {
-    const db = await getDb();
-    const result = await db.runAsync(
-      'INSERT INTO outbox (method, url, body_json, created_at) VALUES (?, ?, ?, ?)',
+    const id = nextId++;
+    const rec: OutboxItem = {
+      id,
       method,
       url,
-      body == null ? null : JSON.stringify(body),
-      Date.now(),
-    );
-    return result.lastInsertRowId;
+      bodyJson: body == null ? null : JSON.stringify(body),
+      createdAt: Date.now(),
+      attempts: 0,
+      lastError: null,
+    };
+    items = [...items, rec];
+    return id;
   },
+
   async list(limit = 50): Promise<OutboxItem[]> {
-    const db = await getDb();
-    const rows = await db.getAllAsync<{
-      id: number;
-      method: string;
-      url: string;
-      body_json: string | null;
-      created_at: number;
-      attempts: number;
-      last_error: string | null;
-    }>('SELECT * FROM outbox ORDER BY id ASC LIMIT ?', limit);
-    return rows.map((r) => ({
-      id: r.id,
-      method: r.method,
-      url: r.url,
-      bodyJson: r.body_json,
-      createdAt: r.created_at,
-      attempts: r.attempts,
-      lastError: r.last_error,
-    }));
+    return items.slice(0, Math.max(0, limit));
   },
+
   async markFailed(id: number, error: string): Promise<void> {
-    const db = await getDb();
-    await db.runAsync(
-      'UPDATE outbox SET attempts = attempts + 1, last_error = ? WHERE id = ?',
-      error,
-      id,
+    items = items.map((it) =>
+      it.id === id
+        ? { ...it, attempts: it.attempts + 1, lastError: error.slice(0, 1000) }
+        : it,
     );
   },
+
   async remove(id: number): Promise<void> {
-    const db = await getDb();
-    await db.runAsync('DELETE FROM outbox WHERE id = ?', id);
+    items = items.filter((it) => it.id !== id);
+  },
+
+  /** Test-only helper. */
+  _clear(): void {
+    items = [];
+    nextId = 1;
   },
 };

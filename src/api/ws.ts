@@ -24,6 +24,7 @@ const MAX_BACKOFF_MS = 8000;
 const MIN_BACKOFF_MS = 250;
 const HEARTBEAT_INTERVAL_MS = 15000;
 const HEARTBEAT_TIMEOUT_MS = 30000;
+const STABLE_OPEN_MS = 2000;
 
 const wsMessageToHit = (m: Extract<WsMessage, { type: 'hit' }>): Hit => ({
   sessionId: m.session_id,
@@ -53,6 +54,12 @@ export class WsClient {
   private silenceTimer: ReturnType<typeof setTimeout> | null = null;
 
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private openAtMs: number | null = null;
+
+  private stableTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private becameStable = false;
 
   constructor(
     private readonly pairing: PairingRecord,
@@ -104,6 +111,10 @@ export class WsClient {
   close(): void {
     this.closedByUser = true;
     this.clearHeartbeat();
+    if (this.stableTimer) {
+      clearTimeout(this.stableTimer);
+      this.stableTimer = null;
+    }
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -132,15 +143,32 @@ export class WsClient {
     }
     this.socket = socket;
 
+    // Reset per-connection stability tracking.
+    this.openAtMs = null;
+    this.becameStable = false;
+    if (this.stableTimer) {
+      clearTimeout(this.stableTimer);
+      this.stableTimer = null;
+    }
+
     socket.onopen = () => {
       if (this.socket !== socket) return;
       if (this.reconnectTimer) {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
       }
-      this.attempt = 0;
+      this.openAtMs = Date.now();
       this.startHeartbeat();
       this.emit('open', undefined);
+
+      // Only reset backoff after the connection stays open for a bit.
+      // This prevents flapping loops where onopen fires but the socket
+      // immediately closes.
+      this.stableTimer = setTimeout(() => {
+        if (this.socket !== socket) return;
+        this.becameStable = true;
+        this.attempt = 0;
+      }, STABLE_OPEN_MS);
     };
 
     socket.onmessage = (ev) => {
@@ -168,6 +196,22 @@ export class WsClient {
         console.log('[ws] close', { code, reason });
       }
       void logger.warn('ws', `close code=${code ?? 'n/a'} reason=${reason ?? ''}`);
+
+      if (this.stableTimer) {
+        clearTimeout(this.stableTimer);
+        this.stableTimer = null;
+      }
+
+      // If the socket closed very soon after opening, treat it as a failed
+      // attempt (do NOT reset backoff), so we don't hammer the server.
+      const openAt = this.openAtMs;
+      const openAgeMs = openAt != null ? Date.now() - openAt : null;
+      if (openAgeMs != null && openAgeMs < STABLE_OPEN_MS && !this.becameStable) {
+        if (__DEV__) {
+          // eslint-disable-next-line no-console
+          console.log('[ws] unstable close', { openAgeMs });
+        }
+      }
       this.clearHeartbeat();
       this.emit('close', undefined);
       this.socket = null;
@@ -208,15 +252,10 @@ export class WsClient {
     switch (msg.type) {
       case 'hit': {
         // Per-hit instrumentation: time from when the Pi published the
-        // hit (msg.ts is the server-side wall clock) to now. Logs as a
-        // single line so you can grep "[ws hit]" in the device console
-        // when sessions feel laggy.
+        // hit (msg.ts is the server-side wall clock) to now.
+        // IMPORTANT: do not write per-hit logs to SQLite (logger.info)
+        // in production — it creates I/O backlog and makes WS unreliable.
         const hit = wsMessageToHit(msg);
-        const latencyMs = Math.max(0, Date.now() - msg.ts * 1000);
-        void logger.info(
-          'ws',
-          `hit score=${hit.score} ring=${hit.ring} dist=${hit.distMm.toFixed(1)}mm latency=${latencyMs}ms ts=${msg.ts.toFixed(3)}`,
-        );
         this.emit('hit', hit);
         break;
       }

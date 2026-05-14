@@ -54,7 +54,6 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   plugins: [
     'expo-secure-store',
-    'expo-sqlite',
     'expo-local-authentication',
     'expo-audio',
     [

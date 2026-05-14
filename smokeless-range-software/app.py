@@ -740,8 +740,12 @@ def main():
             rings_by_mm = {}
             calib_source = "none"
 
+            frozen_homography = None
+
             if align_frozen and frozen_snapshot is not None:
-                bull_geom, Pa, Pb, rings_by_mm, tx1, ty1, tx2, ty2 = frozen_snapshot
+                # Snapshot also carries the scoring homography (ring-only) so
+                # frozen live sessions don't rebuild it every frame.
+                bull_geom, Pa, Pb, rings_by_mm, tx1, ty1, tx2, ty2, frozen_homography = frozen_snapshot
                 ring_scale_axes = (Pa, Pb)
                 calib_source = "frozen"
             elif current_bull is not None:
@@ -844,70 +848,76 @@ def main():
             else:
                 detection, mask = detector.detect(frame)
 
-            # Calibration scoring homography (paper-mm space). Always compute
-            # when possible, but only draw overlays when preview/GUI needs it.
+            # Calibration scoring homography (paper-mm space).
+            # When frozen, reuse the cached homography; otherwise compute it.
             paper_homography = None
+            if align_frozen and frozen_homography is not None:
+                paper_homography = frozen_homography
             if CALIBRATION_ENABLED and bull_geom is not None and ring_scale_axes is not None:
-                bcx, bcy, ba, bb, bang = bull_geom
-                Pa_px, Pb_px = ring_scale_axes
-                outer_mm = RING_DIAMETERS_MM[0] / 2.0
+                if paper_homography is not None and not render_overlay:
+                    # Frozen + headless/no-preview: reuse cached scoring homography.
+                    pass
+                else:
+                    bcx, bcy, ba, bb, bang = bull_geom
+                    Pa_px, Pb_px = ring_scale_axes
+                    outer_mm = RING_DIAMETERS_MM[0] / 2.0
 
-                # Apply operator centre offset (mm → px) along the ellipse's
-                # major/minor axes so the centre tweak is perspective-aware.
-                # When frozen, the snapshot already has the offset baked
-                # in — re-applying it would drift the centre every frame.
-                theta = math.radians(bang)
-                cos_t, sin_t = math.cos(theta), math.sin(theta)
-                if not align_frozen:
-                    mm_per_px_a = outer_mm / Pa_px if Pa_px > 0 else 0.0
-                    mm_per_px_b = outer_mm / Pb_px if Pb_px > 0 else 0.0
-                    off_px_a = tweaks.offset_x_mm / mm_per_px_a if mm_per_px_a > 0 else 0.0
-                    off_px_b = tweaks.offset_y_mm / mm_per_px_b if mm_per_px_b > 0 else 0.0
-                    bcx = bcx + off_px_a * cos_t - off_px_b * sin_t
-                    bcy = bcy + off_px_a * sin_t + off_px_b * cos_t
-                    bull_geom = (bcx, bcy, ba, bb, bang)
+                    # Apply operator centre offset (mm → px) along the ellipse's
+                    # major/minor axes so the centre tweak is perspective-aware.
+                    # When frozen, the snapshot already has the offset baked
+                    # in — re-applying it would drift the centre every frame.
+                    theta = math.radians(bang)
+                    cos_t, sin_t = math.cos(theta), math.sin(theta)
+                    if not align_frozen:
+                        mm_per_px_a = outer_mm / Pa_px if Pa_px > 0 else 0.0
+                        mm_per_px_b = outer_mm / Pb_px if Pb_px > 0 else 0.0
+                        off_px_a = tweaks.offset_x_mm / mm_per_px_a if mm_per_px_a > 0 else 0.0
+                        off_px_b = tweaks.offset_y_mm / mm_per_px_b if mm_per_px_b > 0 else 0.0
+                        bcx = bcx + off_px_a * cos_t - off_px_b * sin_t
+                        bcy = bcy + off_px_a * sin_t + off_px_b * cos_t
+                        bull_geom = (bcx, bcy, ba, bb, bang)
 
-                built = build_paper_corners_and_homography(
-                    bull_geom, ring_scale_axes,
-                    tweaks.keystone_h, tweaks.keystone_v,
-                    tweaks.paper_rotation_deg, tweaks.paper_scale,
-                    tweaks.keystone_d1, tweaks.keystone_d2,
-                )
-                if built is not None:
-                    corners_image, paper_homography = built
-
-                    # The ring/scoring homography ignores the paper-only
-                    # tweaks so adjusting the rectangle never affects scoring.
-                    ring_built = build_paper_corners_and_homography(
+                    built = build_paper_corners_and_homography(
                         bull_geom, ring_scale_axes,
                         tweaks.keystone_h, tweaks.keystone_v,
-                        0.0, 1.0,
+                        tweaks.paper_rotation_deg, tweaks.paper_scale,
                         tweaks.keystone_d1, tweaks.keystone_d2,
                     )
-                    ring_homography = ring_built[1] if ring_built is not None else paper_homography
-                    paper_homography = ring_homography
+                    if built is not None:
+                        corners_image, paper_homography = built
 
-                    if render_overlay:
-                        color = (255, 180, 0)
-                        cv2.polylines(
-                            frame, [corners_image.astype(np.int32)],
-                            True, (255, 0, 0), 2, cv2.LINE_AA,
+                        # The ring/scoring homography ignores the paper-only
+                        # tweaks so adjusting the rectangle never affects scoring.
+                        ring_built = build_paper_corners_and_homography(
+                            bull_geom, ring_scale_axes,
+                            tweaks.keystone_h, tweaks.keystone_v,
+                            0.0, 1.0,
+                            tweaks.keystone_d1, tweaks.keystone_d2,
                         )
-                        cx_mm = TARGET_PAPER_MM / 2.0
-                        for diam in RING_DIAMETERS_MM:
-                            pts = project_paper_circle(
-                                ring_homography, cx_mm, cx_mm, diam / 2.0
+                        ring_homography = ring_built[1] if ring_built is not None else paper_homography
+                        paper_homography = ring_homography
+
+                        if render_overlay:
+                            color = (255, 180, 0)
+                            cv2.polylines(
+                                frame, [corners_image.astype(np.int32)],
+                                True, (255, 0, 0), 2, cv2.LINE_AA,
                             )
-                            cv2.polylines(frame, [pts], True, color, 1, cv2.LINE_AA)
-                        pts_inner = project_paper_circle(
-                            ring_homography, cx_mm, cx_mm,
-                            INNER_TEN_DIAMETER_MM / 2.0,
-                        )
-                        cv2.polylines(frame, [pts_inner], True, color, 1, cv2.LINE_AA)
-                        cv2.drawMarker(
-                            frame, (int(bcx), int(bcy)), color,
-                            cv2.MARKER_CROSS, 12, 1,
-                        )
+                            cx_mm = TARGET_PAPER_MM / 2.0
+                            for diam in RING_DIAMETERS_MM:
+                                pts = project_paper_circle(
+                                    ring_homography, cx_mm, cx_mm, diam / 2.0
+                                )
+                                cv2.polylines(frame, [pts], True, color, 1, cv2.LINE_AA)
+                            pts_inner = project_paper_circle(
+                                ring_homography, cx_mm, cx_mm,
+                                INNER_TEN_DIAMETER_MM / 2.0,
+                            )
+                            cv2.polylines(frame, [pts_inner], True, color, 1, cv2.LINE_AA)
+                            cv2.drawMarker(
+                                frame, (int(bcx), int(bcy)), color,
+                                cv2.MARKER_CROSS, 12, 1,
+                            )
             elif CALIBRATION_ENABLED and render_overlay:
                 cv2.rectangle(frame, (tx1, ty1), (tx2, ty2), (255, 0, 0), 2)
                 draw_target_rings(frame, tx1, ty1, tx2, ty2, color=(255, 180, 0))
@@ -1299,8 +1309,17 @@ def main():
                     # frames keep the same calibration.
                     if bull_geom is not None and ring_scale_axes is not None:
                         Pa_cache, Pb_cache = ring_scale_axes
-                        frozen_snapshot = (bull_geom, Pa_cache, Pb_cache,
-                                           dict(rings_by_mm), tx1, ty1, tx2, ty2)
+                        frozen_snapshot = (
+                            bull_geom,
+                            Pa_cache,
+                            Pb_cache,
+                            dict(rings_by_mm),
+                            tx1,
+                            ty1,
+                            tx2,
+                            ty2,
+                            paper_homography,
+                        )
                     else:
                         align_frozen = False
                         print("Cannot freeze: bull not detected yet.")
