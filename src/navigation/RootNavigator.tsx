@@ -218,12 +218,15 @@ export const RootNavigator = () => {
       });
 
       // If the socket is already open (e.g. effect re-mounted and we missed
-      // the prior 'open' event), sync state immediately.
-      if (ws.isOpen()) {
-        setAttached(true);
-      } else {
-        ws.connect();
+      // the prior 'open' event), do NOT assume we're attached — we want a
+      // fresh attach on app boot so Home never renders as "connected" until
+      // we actually confirm WS liveness.
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
       }
+      ws.connect();
       // Cleanup handlers when effect reruns.
       return () => {
         offOpen();

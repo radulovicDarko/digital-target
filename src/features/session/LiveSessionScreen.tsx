@@ -90,6 +90,8 @@ export const LiveSessionScreen = ({
 
   const wsRef = useRef<WsClient | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  const statusRef = useRef(status);
+  const pausedByConnectionRef = useRef(false);
   const autoEndedRef = useRef(false);
   const lastSeqRef = useRef<number | null>(null);
   const replayInFlightRef = useRef(false);
@@ -111,6 +113,10 @@ export const LiveSessionScreen = ({
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
+
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
 
   // Start the local session as soon as we land here. The Pi has no
   // concept of sessions any more — it's a thin sensor that just streams
@@ -230,18 +236,35 @@ export const LiveSessionScreen = ({
         }
       })();
     };
-    const onReconnectingEvt = (): void => setReconnecting(true);
-    const onOpen = (): void => setReconnecting(false);
+    const onReconnectingEvt = (): void => {
+      setReconnecting(true);
+      if (statusRef.current === 'running') {
+        pausedByConnectionRef.current = true;
+        setStatus('paused');
+      }
+    };
+    const onClose = (): void => {
+      onReconnectingEvt();
+    };
+    const onOpen = (): void => {
+      setReconnecting(false);
+      if (pausedByConnectionRef.current && statusRef.current === 'paused') {
+        pausedByConnectionRef.current = false;
+        setStatus('running');
+      }
+    };
 
     let cleanup: () => void;
     wsRef.current = ws;
     const offHit = ws.on('hit', onHit);
     const offRec = ws.on('reconnecting', onReconnectingEvt);
     const offOpen = ws.on('open', onOpen);
+    const offClose = ws.on('close', onClose);
     cleanup = () => {
       offHit();
       offRec();
       offOpen();
+      offClose();
       // Do not close: shared WS is owned by RootNavigator.
     };
     return cleanup;
@@ -526,7 +549,7 @@ export const LiveSessionScreen = ({
         </Card>
       ) : null}
 
-      {status === 'paused' ? (
+      {status === 'paused' && !reconnecting ? (
         <Card style={{ backgroundColor: theme.colors.info }}>
           <Text color="textInverse">{t('session.pausedBanner')}</Text>
         </Card>

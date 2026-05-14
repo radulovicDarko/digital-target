@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ScrollView, StyleSheet, View } from 'react-native';
 
@@ -23,6 +24,11 @@ export const PairingDiscoveryScreen = ({
   const theme = useTheme();
   const { services, scanning } = useMdnsDiscovery();
   const { probe, probing, candidates } = useApProbe();
+
+  useEffect(() => {
+    void probe();
+    // probe is stable (useCallback) but include it for correctness.
+  }, [probe]);
 
   return (
     <Screen testID="pairing-discovery">

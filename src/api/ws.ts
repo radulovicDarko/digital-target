@@ -24,7 +24,76 @@ const MAX_BACKOFF_MS = 8000;
 const MIN_BACKOFF_MS = 250;
 const HEARTBEAT_INTERVAL_MS = 15000;
 const HEARTBEAT_TIMEOUT_MS = 30000;
-const STABLE_OPEN_MS = 2000;
+const STABLE_OPEN_MS = 1000;
+
+const isFiniteNumber = (v: unknown): v is number =>
+  typeof v === 'number' && Number.isFinite(v);
+
+const isInt = (v: unknown): v is number =>
+  typeof v === 'number' && Number.isInteger(v);
+
+const isIntInRange = (v: unknown, min: number, max: number): v is number =>
+  isInt(v) && v >= min && v <= max;
+
+const isNorm01 = (v: unknown): v is number => isFiniteNumber(v) && v >= 0 && v <= 1;
+
+const tryFastHit = (parsed: unknown): { msg: Extract<WsMessage, { type: 'hit' }>; hit: Hit } | null => {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const o = parsed as Record<string, unknown>;
+  if (o.type !== 'hit') return null;
+
+  // Minimal shape/type checks. Keep this branch allocation-light because it's
+  // on the hot path during rapid fire / replay bursts.
+  const session_id = o.session_id;
+  const ts = o.ts;
+  const seq = o.seq;
+  const x_norm = o.x_norm;
+  const y_norm = o.y_norm;
+  const score = o.score;
+  const ring = o.ring;
+  const x_mm = o.x_mm;
+  const y_mm = o.y_mm;
+  const dist_mm = o.dist_mm;
+  const is_inner_ten = o.is_inner_ten;
+
+  if (typeof session_id !== 'string' || !isFiniteNumber(ts)) return null;
+  if (seq != null && (!isInt(seq) || seq < 0)) return null;
+  if (!isNorm01(x_norm) || !isNorm01(y_norm)) return null;
+  if (!isIntInRange(score, 0, 10) || !isIntInRange(ring, 0, 10)) return null;
+  if (!isFiniteNumber(x_mm) || !isFiniteNumber(y_mm)) return null;
+  if (!isFiniteNumber(dist_mm) || dist_mm < 0) return null;
+  if (typeof is_inner_ten !== 'boolean') return null;
+
+  const msg: Extract<WsMessage, { type: 'hit' }> = {
+    type: 'hit',
+    session_id,
+    ts,
+    ...(seq != null ? { seq: seq as number } : {}),
+    x_norm,
+    y_norm,
+    score,
+    ring,
+    x_mm,
+    y_mm,
+    dist_mm,
+    is_inner_ten,
+  };
+
+  const hit: Hit = {
+    sessionId: session_id,
+    ts,
+    ...(seq != null ? { seq: seq as number } : {}),
+    xNorm: x_norm,
+    yNorm: y_norm,
+    score,
+    ring,
+    xMm: x_mm,
+    yMm: y_mm,
+    distMm: dist_mm,
+    isInnerTen: is_inner_ten,
+  };
+  return { msg, hit };
+};
 
 const wsMessageToHit = (m: Extract<WsMessage, { type: 'hit' }>): Hit => ({
   sessionId: m.session_id,
@@ -230,6 +299,15 @@ export class WsClient {
 
     // Allow plain "pong" / heartbeat ack without schema noise.
     if (parsed && typeof parsed === 'object' && (parsed as { type?: string }).type === 'pong') {
+      return;
+    }
+
+    // Fast-path hits: avoid Zod validation cost on hot path. Falls back to
+    // Zod for non-hit messages and for any hit that fails basic checks.
+    const fast = tryFastHit(parsed);
+    if (fast) {
+      this.emit('raw', fast.msg);
+      this.emit('hit', fast.hit);
       return;
     }
 
