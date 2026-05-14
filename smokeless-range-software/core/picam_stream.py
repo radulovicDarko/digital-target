@@ -47,6 +47,82 @@ class PiCamStream:
         self.fps = int(fps)
         self._cam: Optional["object"] = None  # type: ignore[name-defined]
 
+        # ---- Autofocus tuning (best-effort) ----
+        self._af_supported = False
+        self._af_trigger_value = None
+        self._frame_idx = 0
+        self._last_af_trigger_ts = 0.0
+        self._blur_check_every = 45  # frames (~0.75s at 60 fps)
+        self._blur_threshold = 30.0
+
+    def _try_enable_autofocus(self, cam: "object") -> None:  # noqa: ANN401
+        """Best-effort continuous AF.
+
+        Only works on cameras that expose AF controls (e.g. Camera Module 3).
+        Safe no-op on fixed-focus modules.
+        """
+        try:
+            import libcamera  # type: ignore
+
+            controls = getattr(libcamera, "controls", None)
+            if controls is None:
+                return
+
+            # Prefer enums when available; fall back to common numeric values.
+            af_mode = getattr(getattr(controls, "AfModeEnum", object()), "Continuous", 2)
+            af_range = getattr(getattr(controls, "AfRangeEnum", object()), "Normal", 1)
+            af_speed = getattr(getattr(controls, "AfSpeedEnum", object()), "Fast", 2)
+            af_trigger = getattr(getattr(controls, "AfTriggerEnum", object()), "Start", 0)
+
+            try:
+                cam.set_controls({
+                    "AfMode": af_mode,
+                    "AfRange": af_range,
+                    "AfSpeed": af_speed,
+                })
+                # Kick an initial focus run.
+                cam.set_controls({"AfTrigger": af_trigger})
+                self._af_supported = True
+                self._af_trigger_value = af_trigger
+                self._last_af_trigger_ts = 0.0
+                print("[picam_stream] autofocus: continuous enabled")
+            except Exception as e:  # noqa: BLE001
+                print(f"[picam_stream] autofocus: controls rejected ({e})")
+        except Exception:
+            # libcamera python module not present / not a Pi.
+            return
+
+    def _maybe_retrigger_af(self, frame: np.ndarray) -> None:
+        if not self._af_supported or self._cam is None:
+            return
+        self._frame_idx += 1
+        if self._frame_idx % self._blur_check_every != 0:
+            return
+
+        # Cheap blur metric: variance of Laplacian on a downscaled grayscale.
+        try:
+            small = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25, interpolation=cv2.INTER_AREA)
+            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+            v = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        except Exception:
+            return
+
+        if v >= self._blur_threshold:
+            return
+        # Throttle triggers so AF isn't spammed.
+        now = float(cv2.getTickCount() / cv2.getTickFrequency())
+        if (now - self._last_af_trigger_ts) < 2.0:
+            return
+        trig = self._af_trigger_value
+        if trig is None:
+            return
+        try:
+            self._cam.set_controls({"AfTrigger": trig})  # type: ignore[attr-defined]
+            self._last_af_trigger_ts = now
+            print(f"[picam_stream] autofocus: retrigger (blur={v:.1f})")
+        except Exception:
+            return
+
     def open(self) -> bool:
         try:
             cam = self._Picamera2()
@@ -59,6 +135,7 @@ class PiCamStream:
             )
             cam.configure(cfg)
             cam.start()
+            self._try_enable_autofocus(cam)
             self._cam = cam
             return True
         except Exception as e:  # noqa: BLE001
@@ -80,6 +157,9 @@ class PiCamStream:
         # alpha channel so downstream cv2 calls see a 3-channel BGR image.
         if frame.ndim == 3 and frame.shape[2] == 4:
             frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
+        # Best-effort: if AF exists and we're seeing blur, retrigger.
+        self._maybe_retrigger_af(frame)
         return True, frame
 
     def release(self) -> None:

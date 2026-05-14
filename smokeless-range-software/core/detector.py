@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import time
+import os
 
 
 class LaserDetector:
@@ -38,6 +39,16 @@ class LaserDetector:
         self.kernel = np.ones((3, 3), np.uint8)
         self.armed = True
 
+        # Debug logging is intentionally opt-in because this runs per-frame
+        # and will spam journald/systemd logs.
+        dbg = (os.environ.get("SHOOTERRANGE_DETECTOR_DEBUG", "0") or "0").lower()
+        self.debug = dbg in ("1", "true", "yes", "on")
+        try:
+            self.debug_every = max(1, int(os.environ.get("SHOOTERRANGE_DETECTOR_DEBUG_EVERY", "30")))
+        except Exception:
+            self.debug_every = 30
+        self._debug_tick = 0
+
     def detect(self, frame):
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
@@ -64,8 +75,14 @@ class LaserDetector:
                 best_area = area
                 best_idx = i
 
-        if all_areas:
-            print(f"[DEBUG] blobs={len(all_areas)} areas={all_areas} min_cfg={self.min_area} max_cfg={self.max_area} accepted={'YES' if best_idx != -1 else 'NO'}")
+        if self.debug and all_areas:
+            self._debug_tick += 1
+            if self._debug_tick % self.debug_every == 0:
+                print(
+                    f"[DEBUG] blobs={len(all_areas)} areas={all_areas} "
+                    f"min_cfg={self.min_area} max_cfg={self.max_area} "
+                    f"accepted={'YES' if best_idx != -1 else 'NO'}"
+                )
 
         if best_idx == -1:
             self.armed = True

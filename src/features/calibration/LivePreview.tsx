@@ -47,6 +47,7 @@ const LivePreviewImpl = ({
       <ZoomablePreview
         uri={uri}
         badge={demoBadge}
+        showZoomControls
         topBadge={
           frozenLabel
             ? {

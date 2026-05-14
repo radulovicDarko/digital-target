@@ -191,6 +191,13 @@ export class WsClient {
 
     const result = WsMessageSchema.safeParse(parsed);
     if (!result.success) {
+      if (__DEV__) {
+        // eslint-disable-next-line no-console
+        console.log('[ws] schema fail', {
+          error: result.error.message,
+          raw: parsed,
+        });
+      }
       void logger.warn('ws', `schema fail: ${result.error.message}`);
       return;
     }

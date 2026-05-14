@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useRef, useState } from 'react';
+import { useRef } from 'react';
 import {
   Image,
   type ImageErrorEventData,
@@ -13,6 +13,7 @@ import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-g
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
+  runOnUI,
   withTiming,
 } from 'react-native-reanimated';
 
@@ -26,6 +27,8 @@ export type ZoomablePreviewProps = {
   uri: string;
   badge?: string;
   topBadge?: { text: string; color: string; icon?: 'lock-closed' | 'flash' };
+  /** When true, shows Zoom + / Zoom − buttons next to the reset control. */
+  showZoomControls?: boolean;
   onLoad?: (e: NativeSyntheticEvent<ImageLoadEventData>) => void;
   onError?: (e: NativeSyntheticEvent<ImageErrorEventData>) => void;
   errorMessage?: string | null;
@@ -41,14 +44,17 @@ export const ZoomablePreview = ({
   uri,
   badge,
   topBadge,
+  showZoomControls = false,
   onLoad,
   onError,
   errorMessage,
   accessibilityLabel,
 }: ZoomablePreviewProps) => {
   const theme = useTheme();
-  const [layout, setLayout] = useState({ width: 0, height: 0 });
   const lastTap = useRef<number>(0);
+
+  const frameW = useSharedValue(0);
+  const frameH = useSharedValue(0);
 
   const scale = useSharedValue(1);
   const startScale = useSharedValue(1);
@@ -57,8 +63,6 @@ export const ZoomablePreview = ({
   const startTx = useSharedValue(0);
   const startTy = useSharedValue(0);
 
-  const w = layout.width;
-  const h = layout.height;
 
   const pinch = Gesture.Pinch()
     .onStart(() => {
@@ -70,8 +74,8 @@ export const ZoomablePreview = ({
       const next = Math.max(MIN_SCALE, Math.min(MAX_SCALE, startScale.value * e.scale));
       scale.value = next;
       // Re-clamp translation so the image edge can't move past the frame.
-      const maxX = ((next - 1) * w) / 2;
-      const maxY = ((next - 1) * h) / 2;
+      const maxX = ((next - 1) * frameW.value) / 2;
+      const maxY = ((next - 1) * frameH.value) / 2;
       tx.value = Math.max(-maxX, Math.min(maxX, tx.value));
       ty.value = Math.max(-maxY, Math.min(maxY, ty.value));
     })
@@ -94,8 +98,8 @@ export const ZoomablePreview = ({
     })
     .onUpdate((e) => {
       'worklet';
-      const maxX = ((scale.value - 1) * w) / 2;
-      const maxY = ((scale.value - 1) * h) / 2;
+      const maxX = ((scale.value - 1) * frameW.value) / 2;
+      const maxY = ((scale.value - 1) * frameH.value) / 2;
       tx.value = Math.max(-maxX, Math.min(maxX, startTx.value + e.translationX));
       ty.value = Math.max(-maxY, Math.min(maxY, startTy.value + e.translationY));
     });
@@ -119,6 +123,22 @@ export const ZoomablePreview = ({
     ty.value = withTiming(0, { duration: 160 });
   };
 
+  const zoomStep = (dir: 1 | -1) => {
+    runOnUI((direction: 1 | -1) => {
+      'worklet';
+      const current = scale.value;
+      const step = 0.5;
+      const target = Math.max(MIN_SCALE, Math.min(MAX_SCALE, current + direction * step));
+      const maxX = ((target - 1) * frameW.value) / 2;
+      const maxY = ((target - 1) * frameH.value) / 2;
+      const clampedX = Math.max(-maxX, Math.min(maxX, tx.value));
+      const clampedY = Math.max(-maxY, Math.min(maxY, ty.value));
+      scale.value = withTiming(target, { duration: 160 });
+      tx.value = withTiming(clampedX, { duration: 160 });
+      ty.value = withTiming(clampedY, { duration: 160 });
+    })(dir);
+  };
+
   const animStyle = useAnimatedStyle(() => ({
     transform: [
       { translateX: tx.value },
@@ -135,10 +155,14 @@ export const ZoomablePreview = ({
           { backgroundColor: theme.colors.surfaceAlt, borderColor: theme.colors.border },
         ]}
         onLayout={(e) =>
-          setLayout({
-            width: e.nativeEvent.layout.width,
-            height: e.nativeEvent.layout.height,
-          })
+          {
+            const next = {
+              width: e.nativeEvent.layout.width,
+              height: e.nativeEvent.layout.height,
+            };
+            frameW.value = next.width;
+            frameH.value = next.height;
+          }
         }
       >
         <GestureDetector gesture={composed}>
@@ -181,14 +205,36 @@ export const ZoomablePreview = ({
           </View>
         ) : null}
 
-        <Pressable
-          style={[styles.resetBtn, { backgroundColor: theme.colors.surface }]}
-          onPress={resetZoom}
-          hitSlop={6}
-          accessibilityLabel="Reset zoom"
-        >
-          <Ionicons name="contract" size={18} color={theme.colors.text} />
-        </Pressable>
+        <View style={styles.controlsBR} pointerEvents="box-none">
+          {showZoomControls ? (
+            <>
+              <Pressable
+                style={[styles.ctrlBtn, { backgroundColor: theme.colors.surface }]}
+                onPress={() => zoomStep(1)}
+                hitSlop={6}
+                accessibilityLabel="Zoom in"
+              >
+                <Ionicons name="add" size={18} color={theme.colors.text} />
+              </Pressable>
+              <Pressable
+                style={[styles.ctrlBtn, { backgroundColor: theme.colors.surface }]}
+                onPress={() => zoomStep(-1)}
+                hitSlop={6}
+                accessibilityLabel="Zoom out"
+              >
+                <Ionicons name="remove" size={18} color={theme.colors.text} />
+              </Pressable>
+            </>
+          ) : null}
+          <Pressable
+            style={[styles.ctrlBtn, { backgroundColor: theme.colors.surface }]}
+            onPress={resetZoom}
+            hitSlop={6}
+            accessibilityLabel="Reset zoom"
+          >
+            <Ionicons name="contract" size={18} color={theme.colors.text} />
+          </Pressable>
+        </View>
       </View>
     </GestureHandlerRootView>
   );
@@ -228,10 +274,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
-  resetBtn: {
+  controlsBR: {
     position: 'absolute',
     bottom: 12,
     right: 12,
+    gap: 8,
+    alignItems: 'center',
+  },
+  ctrlBtn: {
     width: 36,
     height: 36,
     borderRadius: 18,
