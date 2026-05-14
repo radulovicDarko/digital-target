@@ -4,6 +4,7 @@ import { useMemo } from 'react';
 import { useAuthStore } from '@/state/authStore';
 import { usePairingStore } from '@/state/pairingStore';
 import { demoStorage } from '@/storage/demoStorage';
+import { getOrCreateClientId } from '@/storage/clientId';
 
 import { createBackendClient } from './backend';
 import { createApiClient } from './client';
@@ -29,7 +30,8 @@ export const useHealthQuery = () => {
     queryKey: queryKeys.health(active?.id ?? 'none'),
     queryFn: async () => {
       if (!client) throw new Error('No paired Range');
-      return client.health();
+      const clientId = await getOrCreateClientId();
+      return client.health(clientId);
     },
     enabled: !!client,
     refetchInterval: 5000,

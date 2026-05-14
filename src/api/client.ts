@@ -76,9 +76,11 @@ export const createApiClient = (pairing: PairingRecord) => {
   });
 
   return {
-    async health() {
+    async health(clientId?: string) {
       try {
-        const r = await http.get('/api/health');
+        const r = await http.get('/api/health', {
+          params: { ...(clientId ? { client_id: clientId } : {}) },
+        });
         return parse(HealthSchema, r.data);
       } catch (e) {
         throw toApiError(e);

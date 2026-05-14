@@ -78,7 +78,6 @@ export const RootNavigator = () => {
   useEffect(() => {
     setAttachInfo(null);
     if (!healthUrl) return undefined;
-    if (attached) return undefined;
     if (!clientId) return undefined;
 
     let cancelled = false;
@@ -86,28 +85,45 @@ export const RootNavigator = () => {
       const ac = new AbortController();
       const timeout = setTimeout(() => ac.abort(), 2500);
       try {
-        const r = await fetch(healthUrl, { signal: ac.signal });
-        if (!r.ok) return;
-        const body = (await r.json()) as {
-          ws?: {
-            attached?: boolean;
-            last_seen_age_s?: number | null;
-            timeout_s?: number;
-            client_id?: string | null;
-          };
-        };
+        const url = new URL(healthUrl);
+        url.searchParams.set('client_id', clientId);
+        const r = await fetch(url.toString(), { signal: ac.signal });
+        const body = (await r.json().catch(() => null)) as
+          | {
+              ws?: {
+                attached?: boolean;
+                last_seen_age_s?: number | null;
+                timeout_s?: number;
+                client_id?: string | null;
+              };
+              error?: string;
+            }
+          | null;
         if (cancelled) return;
 
-        // For the polling-based hit delivery, treat "attached" as
-        // "Range is reachable via /api/health".
-        setAttached(true);
-
-        const ws = body.ws;
-        const alreadyAttached = !!ws?.attached;
-        if (!alreadyAttached) {
-          setAttachInfo(null);
+        if (!r.ok) {
+          if (r.status === 409 && body?.error === 'already_attached') {
+            setAttached(false);
+            const ws = body.ws;
+            const attachedClientId = ws?.client_id ?? null;
+            const kind: 'elsewhere' | 'self' =
+              attachedClientId && attachedClientId === clientId ? 'self' : 'elsewhere';
+            const age = ws?.last_seen_age_s ?? null;
+            const timeoutS = ws?.timeout_s ?? null;
+            const remainingS =
+              age != null && timeoutS != null
+                ? Math.max(0, Math.round(timeoutS - age))
+                : undefined;
+            setAttachInfo({ kind, remainingS });
+          }
           return;
         }
+
+        // Success: we are attached (or became attached) on this device.
+        setAttached(true);
+        setAttachInfo(null);
+
+        const ws = body?.ws;
         const attachedClientId = ws?.client_id ?? null;
         const kind: 'elsewhere' | 'self' =
           attachedClientId && attachedClientId === clientId ? 'self' : 'elsewhere';
@@ -115,7 +131,11 @@ export const RootNavigator = () => {
         const timeoutS = ws?.timeout_s ?? null;
         const remainingS =
           age != null && timeoutS != null ? Math.max(0, Math.round(timeoutS - age)) : undefined;
-        setAttachInfo({ kind, remainingS });
+        // If server reports attached-but-not-us, keep gate.
+        if (ws?.attached && kind === 'elsewhere') {
+          setAttached(false);
+          setAttachInfo({ kind, remainingS });
+        }
       } catch {
         // ignore — WS will keep trying; this is just for UX hints
       } finally {
@@ -175,7 +195,7 @@ export const RootNavigator = () => {
   }) => (
     <Screen testID="attach">
       <Text variant="h2">Connecting to Range…</Text>
-      <Loading label="Waiting for WebSocket attach" />
+      <Loading label="Waiting for Range attach" />
       {attachInfo?.kind === 'elsewhere' ? (
         <Text color="textMuted" style={{ textAlign: 'center' }}>
           {attachInfo.remainingS != null

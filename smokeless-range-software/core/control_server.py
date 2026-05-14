@@ -8,7 +8,8 @@ turning it into yet another database to back up.
 
 Endpoints:
 
-  GET  /api/health                       -> {status, version, uptime_s}
+    GET  /api/health                       -> {status, version, uptime_s}
+    GET  /api/health?client_id=...         -> same, but enforces single-client attach
   POST /api/pair                         -> {token, device_name, device_id}
   GET  /api/target/config                -> target geometry (mm)
   GET  /api/hits/replay?since=N          -> backfill missed hits (since seq N)
@@ -552,6 +553,14 @@ class _ControlHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         path = self._split_path()
         if path == "/api/health":
+            qs = parse_qs(urlsplit(self.path).query)
+            client_id = qs.get("client_id", [None])[0]
+            if client_id:
+                peer = f"{self.client_address[0]}:{self.client_address[1]}"
+                token = self.state.ensure_attached(peer, client_id)
+                if token is None:
+                    self._json(409, {"error": "already_attached", "ws": self.state.ws_info()})
+                    return
             self._json(200, {
                 "status": "ok",
                 "version": self.version,
