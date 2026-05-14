@@ -52,6 +52,8 @@ from config import (
     HIT_LOG_ENABLED,
     HIT_LOG_EVERY,
     HIT_LOG_FORMAT,
+    REJECT_LOG_ENABLED,
+    REJECT_LOG_MIN_INTERVAL_MS,
 )
 
 import config as _config
@@ -508,6 +510,27 @@ def main():
     # Headless log throttle counter.
     hit_log_n = 0
 
+    # Headless reject-only logging (rate-limited per reason).
+    reject_last_ts: dict[str, float] = {}
+
+    def _log_reject(reason: str, **fields) -> None:  # noqa: ANN001
+        if not headless:
+            return
+        if not REJECT_LOG_ENABLED:
+            return
+        now = time.time()
+        last = reject_last_ts.get(reason, 0.0)
+        min_interval_s = float(REJECT_LOG_MIN_INTERVAL_MS) / 1000.0
+        if min_interval_s > 0 and (now - last) < min_interval_s:
+            return
+        reject_last_ts[reason] = now
+        # Keep the line short + grep-friendly.
+        extra = " ".join(f"{k}={v}" for k, v in fields.items() if v is not None)
+        if extra:
+            print(f"REJECT reason={reason} {extra}")
+        else:
+            print(f"REJECT reason={reason}")
+
     # Auto-align state. The bull (dark central disc) is detected every frame
     # and smoothed. Operator tweaks (scale/offset) are loaded once at startup
     # and persist across runs in calibration_tweaks.json.
@@ -906,6 +929,7 @@ def main():
                 calibrated = False
                 inside_roi = False
                 send_detection = None
+                reject_reason = None
 
                 if CALIBRATION_ENABLED:
                     inside_roi = point_inside_target(
@@ -932,6 +956,10 @@ def main():
                                 "nx": cal_nx,
                                 "ny": cal_ny,
                             }
+                        else:
+                            reject_reason = "map_failed"
+                    else:
+                        reject_reason = "outside_roi"
                 else:
                     send_detection = {
                         "x": raw_x,
@@ -941,12 +969,38 @@ def main():
                         "ny": raw_ny,
                     }
 
-                # Don't register hits until calibration is confirmed (frozen with 'n')
-                if (
-                    detector.should_emit_shot()
-                    and send_detection is not None
-                    and (align_frozen or not auto_align)
-                ):
+                # If we detected a laser but can't accept it, emit a headless
+                # rejection log with the reason (rate-limited).
+                if send_detection is None:
+                    _log_reject(
+                        reject_reason or "no_send_detection",
+                        raw=f"({raw_x},{raw_y})",
+                        area=area,
+                        inside_roi=inside_roi if CALIBRATION_ENABLED else None,
+                    )
+                    continue
+
+                # Don't register hits until calibration is confirmed (frozen with 'n').
+                # IMPORTANT: don't consume detector cooldown if we're not allowed to fire.
+                if not (align_frozen or not auto_align):
+                    _log_reject(
+                        "not_frozen",
+                        raw=f"({raw_x},{raw_y})",
+                        area=area,
+                        inside_roi=inside_roi if CALIBRATION_ENABLED else None,
+                    )
+                    continue
+
+                if not detector.should_emit_shot():
+                    _log_reject(
+                        "cooldown" if not getattr(detector, "armed", True) else "cooldown",
+                        raw=f"({raw_x},{raw_y})",
+                        area=area,
+                    )
+                    continue
+
+                # Hit candidate accepted by detector + calibration state.
+                if True:
                     send_nx = send_detection["nx"]
                     send_ny = send_detection["ny"]
                     unity_ny = 1.0 - send_ny if UNITY_INVERT_Y else send_ny
@@ -1026,15 +1080,13 @@ def main():
                     is_real_shot = on_paper and hit_dist <= (paper_half_mm + 3.0)
 
                     if not is_real_shot:
-                        if not headless or HIT_LOG_ENABLED:
-                            # In headless mode this can be noisy; keep it behind HIT_LOG_ENABLED.
-                            if headless:
-                                hit_log_n += 1
-                            if (not headless) or (hit_log_n % HIT_LOG_EVERY == 0):
-                                print(
-                                    f"DROP raw=({raw_x},{raw_y}) dist={hit_dist:.1f}mm "
-                                    f"area={area} score={hit_score} (off paper)"
-                                )
+                        _log_reject(
+                            "off_paper",
+                            raw=f"({raw_x},{raw_y})",
+                            area=area,
+                            dist=f"{hit_dist:.1f}mm",
+                            score=hit_score,
+                        )
                     else:
                         # Hits outside ring 1 (score 0) still count: a fired
                         # shot is a fired shot, just worth zero points.

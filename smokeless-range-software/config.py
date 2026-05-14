@@ -192,3 +192,25 @@ HIT_LOG_FORMAT = (
     _os.environ.get("SHOOTERRANGE_HIT_LOG_FORMAT", "short" if _HEADLESS_RESOLVED else "full")
     or "full"
 ).strip().lower()
+
+# ---------------------------------------------------------------------------
+# Headless reject logging (why a detected laser didn't become a hit)
+#
+#   SHOOTERRANGE_REJECT_LOG=0/1
+#     - When enabled (typically only in headless), logs only rejections with
+#       a short reason code (outside_roi, not_frozen, cooldown, off_paper...).
+#
+#   SHOOTERRANGE_REJECT_LOG_MIN_INTERVAL_MS=NNN
+#     - Rate-limit per reason so a constant laser dot doesn't spam logs.
+# ---------------------------------------------------------------------------
+REJECT_LOG_ENABLED = _env_flag(
+    "SHOOTERRANGE_REJECT_LOG",
+    default=False,
+)
+REJECT_LOG_MIN_INTERVAL_MS = max(
+    0,
+    _env_int(
+        "SHOOTERRANGE_REJECT_LOG_MIN_INTERVAL_MS",
+        1000 if _HEADLESS_RESOLVED else 0,
+    ),
+)
