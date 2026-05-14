@@ -6,24 +6,6 @@ import time
 import cv2
 import numpy as np
 
-try:
-    import pygame
-    pygame.mixer.init()
-    _SHOOT_SOUND = pygame.mixer.Sound(os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "assets", "Raspberry_Shot.wav"))
-    _SHOOT_CHANNEL = pygame.mixer.Channel(0)
-except Exception as e:
-    print(f"Sound disabled: {e}")
-    _SHOOT_SOUND = None
-    _SHOOT_CHANNEL = None
-
-
-def play_shoot():
-    if _SHOOT_SOUND is None or _SHOOT_CHANNEL is None:
-        return
-    _SHOOT_CHANNEL.stop()
-    _SHOOT_CHANNEL.play(_SHOOT_SOUND)
-
 from config import (
     is_headless,
     RTSP_URL,
@@ -1130,7 +1112,6 @@ def main():
                                 "is_inner_ten": bool(is_inner_ten),
                             })
 
-                        play_shoot()
 
             if SHOW_FPS:
                 fps = fps_timer.update()
