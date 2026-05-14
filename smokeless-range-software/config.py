@@ -205,7 +205,7 @@ HIT_LOG_FORMAT = (
 # ---------------------------------------------------------------------------
 REJECT_LOG_ENABLED = _env_flag(
     "SHOOTERRANGE_REJECT_LOG",
-    default=False,
+    default=True,
 )
 REJECT_LOG_MIN_INTERVAL_MS = max(
     0,
@@ -213,4 +213,22 @@ REJECT_LOG_MIN_INTERVAL_MS = max(
         "SHOOTERRANGE_REJECT_LOG_MIN_INTERVAL_MS",
         1000 if _HEADLESS_RESOLVED else 0,
     ),
+)
+
+# ---------------------------------------------------------------------------
+# Control server hit prints ([hit] seq=...) — these are emitted from
+# core/control_server.py when a hit is published to WS subscribers.
+#
+#   SHOOTERRANGE_SERVER_HIT_LOG=0/1
+#   SHOOTERRANGE_SERVER_HIT_LOG_EVERY=N
+#
+# Defaults: quiet in headless, verbose in GUI/dev.
+# ---------------------------------------------------------------------------
+SERVER_HIT_LOG_ENABLED = _env_flag(
+    "SHOOTERRANGE_SERVER_HIT_LOG",
+    default=(not _HEADLESS_RESOLVED),
+)
+SERVER_HIT_LOG_EVERY = max(
+    1,
+    _env_int("SHOOTERRANGE_SERVER_HIT_LOG_EVERY", 10 if _HEADLESS_RESOLVED else 1),
 )

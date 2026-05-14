@@ -55,10 +55,22 @@ _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 class ControlState:
     """Thread-safe shared state between the cv2 main loop and the HTTP server."""
 
-    def __init__(self, target_config: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(
+        self,
+        target_config: Optional[Dict[str, Any]] = None,
+        *,
+        hit_log_enabled: bool = True,
+        hit_log_every: int = 1,
+    ) -> None:
         self._frame_lock = threading.Lock()
         self._jpeg: Optional[bytes] = None
         self._frame_event = threading.Event()
+
+        # Per-hit server-side logging ([hit] seq=...). In headless/systemd this
+        # can flood journald, so callers (app.py) pass config-driven defaults.
+        self._hit_log_enabled = bool(hit_log_enabled)
+        self._hit_log_every = max(1, int(hit_log_every))
+        self._hit_log_n = 0
 
         self._req_lock = threading.Lock()
         self._freeze_request: Optional[bool] = None  # True=freeze, False=unfreeze
@@ -374,12 +386,15 @@ class ControlState:
         t0 = time.time()
         self._broadcast(message)
         t_broadcast_ms = (time.time() - t0) * 1000.0
-        n_subs = self.subscriber_count()
-        print(
-            f"[hit] seq={seq} ts={ts:.3f} score={hit.get('score')} "
-            f"ring={hit.get('ring')} dist={hit.get('dist_mm', 0.0):.1f}mm "
-            f"subs={n_subs} broadcast={t_broadcast_ms:.1f}ms"
-        )
+        if self._hit_log_enabled:
+            self._hit_log_n += 1
+            if self._hit_log_n % self._hit_log_every == 0:
+                n_subs = self.subscriber_count()
+                print(
+                    f"[hit] seq={seq} ts={ts:.3f} score={hit.get('score')} "
+                    f"ring={hit.get('ring')} dist={hit.get('dist_mm', 0.0):.1f}mm "
+                    f"subs={n_subs} broadcast={t_broadcast_ms:.1f}ms"
+                )
 
     def replay_hits_since(self, last_seq: int, max_count: int = 256) -> List[Dict[str, Any]]:
         """Return all buffered hits with seq > last_seq, oldest first.

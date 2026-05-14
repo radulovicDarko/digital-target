@@ -54,6 +54,8 @@ from config import (
     HIT_LOG_FORMAT,
     REJECT_LOG_ENABLED,
     REJECT_LOG_MIN_INTERVAL_MS,
+    SERVER_HIT_LOG_ENABLED,
+    SERVER_HIT_LOG_EVERY,
 )
 
 import config as _config
@@ -565,7 +567,7 @@ def main():
             "inner_ten_mm": float(INNER_TEN_DIAMETER_MM),
             "pellet_mm": float(PELLET_DIAMETER_MM),
             "discipline": "ISSF 10m Air Pistol",
-        })
+        }, hit_log_enabled=SERVER_HIT_LOG_ENABLED, hit_log_every=SERVER_HIT_LOG_EVERY)
         try:
             start_control_server(
                 control_state,
