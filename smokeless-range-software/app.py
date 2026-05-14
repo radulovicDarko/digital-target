@@ -993,7 +993,7 @@ def main():
 
                 if not detector.should_emit_shot():
                     _log_reject(
-                        "cooldown" if not getattr(detector, "armed", True) else "cooldown",
+                        "not_armed" if not getattr(detector, "armed", True) else "cooldown",
                         raw=f"({raw_x},{raw_y})",
                         area=area,
                     )
