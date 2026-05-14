@@ -7,7 +7,7 @@ import { CalibrationScreen } from '@/features/calibration';
 import { SessionDetailScreen } from '@/features/history';
 import { PairingWizard } from '@/features/pairing';
 import { ProfileScreen } from '@/features/profile';
-import { closeSharedWsClient, getOrCreateSharedWsClient } from '@/api/sharedWs';
+import { closeSharedWsClient } from '@/api/sharedWs';
 import { Button, Loading, Screen, Text } from '@/components';
 import { useAuthStore } from '@/state/authStore';
 import { usePairingStore } from '@/state/pairingStore';
@@ -97,6 +97,11 @@ export const RootNavigator = () => {
           };
         };
         if (cancelled) return;
+
+        // For the polling-based hit delivery, treat "attached" as
+        // "Range is reachable via /api/health".
+        setAttached(true);
+
         const ws = body.ws;
         const alreadyAttached = !!ws?.attached;
         if (!alreadyAttached) {
@@ -126,125 +131,28 @@ export const RootNavigator = () => {
     };
   }, [attached, clientId, healthUrl, attachAttempt]);
 
-  // Global WS connection: keep a single shared socket open once the user has
-  // a paired device. This makes hit streaming more reliable and avoids
-  // multiple screens racing to open/close their own WS.
+  // On boot, generate a stable client id. Hit delivery is polling-based;
+  // we do NOT keep a global WebSocket attached.
   useEffect(() => {
     setAttached(false);
     if (!active) return undefined;
 
     let cancelled = false;
-    let ws: ReturnType<typeof getOrCreateSharedWsClient> = null;
 
     const start = async () => {
       const clientId = await getOrCreateClientId();
       if (cancelled) return;
       setClientId(clientId);
-      ws = getOrCreateSharedWsClient(active, clientId);
-      if (!ws) {
-        // Demo pairing: treat as attached.
-        setAttached(true);
-        return;
-      }
-
-      // Lightweight guard: if the Range is already attached to a different
-      // device, don't enter a WS reconnect loop (which floods journald on the Pi).
-      // Keep the socket closed and rely on the user's manual Retry.
-      if (healthUrl) {
-        const ac = new AbortController();
-        const timeout = setTimeout(() => ac.abort(), 2500);
-        try {
-          const r = await fetch(healthUrl, { signal: ac.signal });
-          if (r.ok) {
-            const body = (await r.json()) as {
-              ws?: {
-                attached?: boolean;
-                last_seen_age_s?: number | null;
-                timeout_s?: number;
-                client_id?: string | null;
-              };
-            };
-            const w = body.ws;
-            const alreadyAttached = !!w?.attached;
-            const attachedClientId = w?.client_id ?? null;
-            if (alreadyAttached && attachedClientId && attachedClientId !== clientId) {
-              const age = w?.last_seen_age_s ?? null;
-              const timeoutS = w?.timeout_s ?? null;
-              const remainingS =
-                age != null && timeoutS != null
-                  ? Math.max(0, Math.round(timeoutS - age))
-                  : undefined;
-              setAttachInfo({ kind: 'elsewhere', remainingS });
-              ws.close();
-              return;
-            }
-          }
-        } catch {
-          // Ignore — if health probe fails, fall back to normal WS connect.
-        } finally {
-          clearTimeout(timeout);
-        }
-      }
-
-      if (__DEV__) {
-        // eslint-disable-next-line no-console
-        console.log('[ws] root attach start', { id: active.id, wsUrl: active.wsUrl, clientId });
-      }
-      void logger.info('ws', `root attach start id=${active.id}`);
-
-      const offOpen = ws.on('open', () => {
-        if (__DEV__) {
-          // eslint-disable-next-line no-console
-          console.log('[ws] root attached');
-        }
-        void logger.info('ws', 'root attached');
-        setAttached(true);
-      });
-      const offClose = ws.on('close', () => {
-        if (__DEV__) {
-          // eslint-disable-next-line no-console
-          console.log('[ws] root detached');
-        }
-        void logger.info('ws', 'root detached');
-        setAttached(false);
-      });
-      const offRec = ws.on('reconnecting', ({ attempt, nextDelayMs }) => {
-        if (__DEV__) {
-          // eslint-disable-next-line no-console
-          console.log('[ws] root reconnecting', { attempt, nextDelayMs });
-        }
-        void logger.info('ws', `root reconnecting attempt=${attempt} delay=${nextDelayMs}`);
-        setAttached(false);
-      });
-
-      // If the socket is already open (e.g. effect re-mounted and we missed
-      // the prior 'open' event), do NOT assume we're attached — we want a
-      // fresh attach on app boot so Home never renders as "connected" until
-      // we actually confirm WS liveness.
-      try {
-        ws.close();
-      } catch {
-        /* ignore */
-      }
-      ws.connect();
-      // Cleanup handlers when effect reruns.
-      return () => {
-        offOpen();
-        offClose();
-        offRec();
-      };
     };
 
-    let unsub: (() => void) | undefined;
-    void (async () => {
-      unsub = await start();
-    })();
+    void start();
     return () => {
       cancelled = true;
-      unsub?.();
     };
     // attachAttempt is a manual retry bump.
   }, [active, attachAttempt]);
+
+  // (WS attach disabled) We rely on /api/health reachability for "attached".
 
   const clearActivePairing = async () => {
     closeSharedWsClient();

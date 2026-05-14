@@ -100,7 +100,7 @@ export const createApiClient = (pairing: PairingRecord) => {
     async replayHits(since: number, limit = 256) {
       try {
         const r = await http.get('/api/hits/replay', {
-          params: { since, limit },
+          params: { since, limit, consume: 1 },
         });
         const data = r.data as { hits: unknown[]; since: number; count: number };
         // Validate each hit individually so a single bad row doesn't drop

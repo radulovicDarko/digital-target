@@ -407,6 +407,26 @@ class ControlState:
             result = [m for m in self._hit_buffer if m.get("seq", 0) > last_seq]
         return result[:max_count]
 
+    def consume_hits_upto(self, seq: int) -> None:
+        """Drop buffered hits with seq <= `seq`.
+
+        This gives polling clients a simple queue-like consume semantics while
+        keeping the buffer bounded and purely in-memory.
+        """
+        with self._seq_lock:
+            if not self._hit_buffer:
+                return
+            # Buffer is stored oldest->newest.
+            drop_idx = 0
+            for i, m in enumerate(self._hit_buffer):
+                mseq = int(m.get("seq", 0) or 0)
+                if mseq <= seq:
+                    drop_idx = i + 1
+                else:
+                    break
+            if drop_idx > 0:
+                del self._hit_buffer[:drop_idx]
+
     def reset_seq(self) -> None:
         """Reset the seq counter and clear the replay buffer. Called on
         session boundaries so replay never returns hits from a previous
@@ -539,7 +559,15 @@ class _ControlHandler(BaseHTTPRequestHandler):
                 limit = max(1, min(256, int(qs.get("limit", ["256"])[0])))
             except (ValueError, TypeError):
                 limit = 256
+            consume = (qs.get("consume", ["0"])[0] or "0").lower() in ("1", "true", "yes", "on")
             hits = self.state.replay_hits_since(since, max_count=limit)
+            if consume and hits:
+                try:
+                    last_seq = int(hits[-1].get("seq", 0) or 0)
+                    if last_seq > 0:
+                        self.state.consume_hits_upto(last_seq)
+                except Exception:
+                    pass
             self._json(200, {"hits": hits, "since": since, "count": len(hits)})
             return
         if path == "/api/stream/preview.mjpeg":

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Alert,
@@ -12,8 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useQueryClient } from '@tanstack/react-query';
 
 import { useApiClient, useTargetConfigQuery } from '@/api/hooks';
-import { getSharedWsClient } from '@/api/sharedWs';
-import type { WsClient } from '@/api/ws';
+import type { ApiClient } from '@/api/client';
 import { Button, Card, ErrorState, Loading, Screen, Text } from '@/components';
 import { useLiveSessionStore } from '@/state/liveSessionStore';
 import { usePairingStore } from '@/state/pairingStore';
@@ -88,13 +87,14 @@ export const LiveSessionScreen = ({
   const setShowGroupEllipse = useLiveSessionStore((s) => s.setShowGroupEllipse);
   const setShowMpi = useLiveSessionStore((s) => s.setShowMpi);
 
-  const wsRef = useRef<WsClient | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const statusRef = useRef(status);
   const pausedByConnectionRef = useRef(false);
   const autoEndedRef = useRef(false);
   const lastSeqRef = useRef<number | null>(null);
   const replayInFlightRef = useRef(false);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollAttemptRef = useRef(0);
   const [elapsed, setElapsed] = useState(0);
   const [canvasArea, setCanvasArea] = useState({ width: 0, height: 0 });
   const [focusedHitTs, setFocusedHitTs] = useState<number | null>(null);
@@ -117,6 +117,59 @@ export const LiveSessionScreen = ({
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
+
+  const acceptHit = useCallback((h: Hit): void => {
+    const patched: Hit =
+      h.sessionId === 'live' && sessionIdRef.current
+        ? { ...h, sessionId: sessionIdRef.current }
+        : h.sessionId
+          ? h
+          : { ...h, sessionId: sessionIdRef.current ?? 'pending' };
+    if (sessionIdRef.current && patched.sessionId !== sessionIdRef.current) return;
+    addHit(patched);
+    void onHitFeedback(h.score, lang);
+  }, [addHit, lang]);
+
+  const processHit = useCallback((api: ApiClient, h: Hit): void => {
+    const seq = h.seq;
+    if (seq == null) {
+      acceptHit(h);
+      return;
+    }
+    const last = lastSeqRef.current;
+    if (last == null) {
+      acceptHit(h);
+      lastSeqRef.current = seq;
+      return;
+    }
+    if (seq <= last) return;
+    if (seq === last + 1) {
+      acceptHit(h);
+      lastSeqRef.current = seq;
+      return;
+    }
+    // Gap: backfill via replay. Avoid parallel replays.
+    if (replayInFlightRef.current) return;
+    replayInFlightRef.current = true;
+    void (async () => {
+      try {
+        const replay = await api.replayHits(last, 256);
+        replay.hits.forEach((rh) => {
+          const rseq = rh.seq;
+          if (rseq == null) {
+            acceptHit(rh);
+            return;
+          }
+          const curLast = lastSeqRef.current ?? 0;
+          if (rseq <= curLast) return;
+          acceptHit(rh);
+          lastSeqRef.current = rseq;
+        });
+      } finally {
+        replayInFlightRef.current = false;
+      }
+    })();
+  }, [acceptHit]);
 
   // Start the local session as soon as we land here. The Pi has no
   // concept of sessions any more — it's a thin sensor that just streams
@@ -141,134 +194,56 @@ export const LiveSessionScreen = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [discipline, shotsPerTargetOverride, targetsPerSessionOverride]);
 
-  // Connect WS once we have a paired Pi. This must NOT depend on `sessionId`
-  // so we don't tear down the socket on every state change.
+  // Poll hits once per second during the live session.
   useEffect(() => {
     if (!active) return undefined;
+    if (!api) return undefined;
+    if (!sessionId) return undefined;
+    if (status === 'ended') return undefined;
 
-    const ws = getSharedWsClient(active);
-    if (!ws) return undefined;
+    let cancelled = false;
 
-    const acceptHit = (h: Hit): void => {
-      // Pi sends session_id="live" for every hit (it doesn't know about
-      // sessions). Rewrite to the locally active id so liveSessionStore
-      // accepts it. Demo path already sends the real local id, so we only
-      // patch the placeholder.
-      const patched: Hit =
-        h.sessionId === 'live' && sessionIdRef.current
-          ? { ...h, sessionId: sessionIdRef.current }
-          : h.sessionId
-            ? h
-            : { ...h, sessionId: sessionIdRef.current ?? 'pending' };
-      if (sessionIdRef.current && patched.sessionId !== sessionIdRef.current) return;
-      addHit(patched);
-      void onHitFeedback(h.score, lang);
+    const schedule = (ms: number) => {
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = setTimeout(() => void tick(), ms);
     };
 
-    const onHit = (h: Hit): void => {
-      const seq = h.seq;
-      // If server doesn't include seq (old firmware) or we don't have an
-      // API client (shouldn't happen with a real pairing), just accept.
-      if (seq == null || !api) {
-        acceptHit(h);
-        if (seq != null) lastSeqRef.current = Math.max(lastSeqRef.current ?? 0, seq);
-        return;
-      }
-
-      const last = lastSeqRef.current;
-      // First hit we see: accept and seed.
-      if (last == null) {
-        acceptHit(h);
-        lastSeqRef.current = seq;
-        return;
-      }
-
-      // Duplicate/out-of-order: drop.
-      if (seq <= last) return;
-
-      // In-order: accept.
-      if (seq === last + 1) {
-        acceptHit(h);
-        lastSeqRef.current = seq;
-        return;
-      }
-
-      // Gap detected: ask REST replay buffer to backfill. We avoid running
-      // multiple concurrent replays; the first will advance lastSeqRef.
-      // While a replay is in flight, still accept strictly in-order hits
-      // so rapid sequences don't get dropped.
-      if (replayInFlightRef.current) {
-        const curLast = lastSeqRef.current;
-        if (curLast != null && seq === curLast + 1) {
-          acceptHit(h);
-          lastSeqRef.current = seq;
+    const tick = async () => {
+      if (cancelled) return;
+      const last = lastSeqRef.current ?? 0;
+      try {
+        const replay = await api.replayHits(last, 256);
+        pollAttemptRef.current = 0;
+        setReconnecting(false);
+        if (pausedByConnectionRef.current && statusRef.current === 'paused') {
+          pausedByConnectionRef.current = false;
+          setStatus('running');
         }
-        return;
-      }
-      replayInFlightRef.current = true;
-      void (async () => {
-        let processedCurrent = false;
-        try {
-          const replay = await api.replayHits(last, 256);
-          replay.hits.forEach((rh) => {
-            const rseq = rh.seq;
-            if (rseq == null) {
-              // Unexpected: replay hits should carry seq, but keep it anyway.
-              acceptHit(rh);
-              return;
-            }
-            const curLast = lastSeqRef.current ?? 0;
-            if (rseq <= curLast) return;
-            acceptHit(rh);
-            lastSeqRef.current = rseq;
-            if (rseq === seq) processedCurrent = true;
-          });
-        } catch {
-          // Fall back: at least don't lose the current hit.
-        } finally {
-          // If replay didn't include the current hit (buffer overflow, race)
-          // accept it so the user still sees something.
-          if (!processedCurrent) {
-            acceptHit(h);
-            lastSeqRef.current = Math.max(lastSeqRef.current ?? 0, seq);
-          }
-          replayInFlightRef.current = false;
+        replay.hits.forEach((h) => processHit(api, h));
+        // Next tick in ~1s.
+        schedule(1000);
+      } catch {
+        // Treat as disconnected: pause + backoff.
+        setReconnecting(true);
+        if (statusRef.current === 'running') {
+          pausedByConnectionRef.current = true;
+          setStatus('paused');
         }
-      })();
-    };
-    const onReconnectingEvt = (): void => {
-      setReconnecting(true);
-      if (statusRef.current === 'running') {
-        pausedByConnectionRef.current = true;
-        setStatus('paused');
-      }
-    };
-    const onClose = (): void => {
-      onReconnectingEvt();
-    };
-    const onOpen = (): void => {
-      setReconnecting(false);
-      if (pausedByConnectionRef.current && statusRef.current === 'paused') {
-        pausedByConnectionRef.current = false;
-        setStatus('running');
+        pollAttemptRef.current += 1;
+        const exp = Math.min(8000, 250 * 2 ** Math.max(0, pollAttemptRef.current - 1));
+        const jitter = Math.random() * 0.3 * exp;
+        schedule(Math.round(exp + jitter));
       }
     };
 
-    let cleanup: () => void;
-    wsRef.current = ws;
-    const offHit = ws.on('hit', onHit);
-    const offRec = ws.on('reconnecting', onReconnectingEvt);
-    const offOpen = ws.on('open', onOpen);
-    const offClose = ws.on('close', onClose);
-    cleanup = () => {
-      offHit();
-      offRec();
-      offOpen();
-      offClose();
-      // Do not close: shared WS is owned by RootNavigator.
+    void tick();
+    return () => {
+      cancelled = true;
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
     };
-    return cleanup;
-  }, [active, addHit, api, lang, setReconnecting]);
+    // reconnecting intentionally omitted; tick manages it.
+  }, [active, api, processHit, sessionId, setReconnecting, setStatus, status]);
 
   // Demo discipline: simulate shots client-side. Pi has no concept of
   // sessions any more, so we feed hits straight into the live store via
