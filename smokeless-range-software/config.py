@@ -226,7 +226,7 @@ REJECT_LOG_MIN_INTERVAL_MS = max(
 # ---------------------------------------------------------------------------
 SERVER_HIT_LOG_ENABLED = _env_flag(
     "SHOOTERRANGE_SERVER_HIT_LOG",
-    default=(not _HEADLESS_RESOLVED),
+    default=(_HEADLESS_RESOLVED),
 )
 SERVER_HIT_LOG_EVERY = max(
     1,
