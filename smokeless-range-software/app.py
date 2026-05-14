@@ -614,6 +614,12 @@ def main():
                 print("Nema frame-a ili je stream prekinut.")
                 break
 
+            # In headless mode we should stay realtime. Drawing rings/HUD/FPS
+            # and expanding full-frame masks is wasted work when nobody is
+            # watching the MJPEG preview.
+            want_preview = control_state is not None and control_state.preview_wanted()
+            render_overlay = (not headless) or want_preview
+
             frame_h, frame_w = frame.shape[:2]
 
             # Re-read tweaks each frame so live REST updates from the mobile
@@ -795,69 +801,73 @@ def main():
                     )
                     roi[paper_mask == 0] = 0
                 detection, roi_mask = detector.detect(roi)
-                mask = cv2.copyMakeBorder(
-                    roi_mask,
-                    ty1,
-                    frame_h - ty2,
-                    tx1,
-                    frame_w - tx2,
-                    cv2.BORDER_CONSTANT,
-                    value=0,
-                )
+                if not headless:
+                    mask = cv2.copyMakeBorder(
+                        roi_mask,
+                        ty1,
+                        frame_h - ty2,
+                        tx1,
+                        frame_w - tx2,
+                        cv2.BORDER_CONSTANT,
+                        value=0,
+                    )
+                else:
+                    mask = roi_mask
                 if detection is not None:
                     detection["x"] += tx1
                     detection["y"] += ty1
             else:
                 detection, mask = detector.detect(frame)
 
-            # Draw calibration overlay (paper-shaped quad + ISSF rings).
-            # Uses a single homography from canonical paper-mm space so that
-            # rotation, aspect, AND keystone tweaks all combine correctly.
-            paper_homography = None  # set when we draw via homography
-            if CALIBRATION_ENABLED:
-                if bull_geom is not None and ring_scale_axes is not None:
-                    bcx, bcy, ba, bb, bang = bull_geom
-                    Pa_px, Pb_px = ring_scale_axes
-                    color = (255, 180, 0)
-                    outer_mm = RING_DIAMETERS_MM[0] / 2.0
+            # Calibration scoring homography (paper-mm space). Always compute
+            # when possible, but only draw overlays when preview/GUI needs it.
+            paper_homography = None
+            if CALIBRATION_ENABLED and bull_geom is not None and ring_scale_axes is not None:
+                bcx, bcy, ba, bb, bang = bull_geom
+                Pa_px, Pb_px = ring_scale_axes
+                outer_mm = RING_DIAMETERS_MM[0] / 2.0
 
-                    # Apply operator centre offset (mm → px) along the ellipse's
-                    # major/minor axes so the centre tweak is perspective-aware.
-                    # When frozen, the snapshot already has the offset baked
-                    # in — re-applying it would drift the centre every frame.
-                    theta = math.radians(bang)
-                    cos_t, sin_t = math.cos(theta), math.sin(theta)
-                    if not align_frozen:
-                        mm_per_px_a = outer_mm / Pa_px if Pa_px > 0 else 0.0
-                        mm_per_px_b = outer_mm / Pb_px if Pb_px > 0 else 0.0
-                        off_px_a = tweaks.offset_x_mm / mm_per_px_a if mm_per_px_a > 0 else 0.0
-                        off_px_b = tweaks.offset_y_mm / mm_per_px_b if mm_per_px_b > 0 else 0.0
-                        bcx = bcx + off_px_a * cos_t - off_px_b * sin_t
-                        bcy = bcy + off_px_a * sin_t + off_px_b * cos_t
-                        bull_geom = (bcx, bcy, ba, bb, bang)
+                # Apply operator centre offset (mm → px) along the ellipse's
+                # major/minor axes so the centre tweak is perspective-aware.
+                # When frozen, the snapshot already has the offset baked
+                # in — re-applying it would drift the centre every frame.
+                theta = math.radians(bang)
+                cos_t, sin_t = math.cos(theta), math.sin(theta)
+                if not align_frozen:
+                    mm_per_px_a = outer_mm / Pa_px if Pa_px > 0 else 0.0
+                    mm_per_px_b = outer_mm / Pb_px if Pb_px > 0 else 0.0
+                    off_px_a = tweaks.offset_x_mm / mm_per_px_a if mm_per_px_a > 0 else 0.0
+                    off_px_b = tweaks.offset_y_mm / mm_per_px_b if mm_per_px_b > 0 else 0.0
+                    bcx = bcx + off_px_a * cos_t - off_px_b * sin_t
+                    bcy = bcy + off_px_a * sin_t + off_px_b * cos_t
+                    bull_geom = (bcx, bcy, ba, bb, bang)
 
-                    built = build_paper_corners_and_homography(
+                built = build_paper_corners_and_homography(
+                    bull_geom, ring_scale_axes,
+                    tweaks.keystone_h, tweaks.keystone_v,
+                    tweaks.paper_rotation_deg, tweaks.paper_scale,
+                    tweaks.keystone_d1, tweaks.keystone_d2,
+                )
+                if built is not None:
+                    corners_image, paper_homography = built
+
+                    # The ring/scoring homography ignores the paper-only
+                    # tweaks so adjusting the rectangle never affects scoring.
+                    ring_built = build_paper_corners_and_homography(
                         bull_geom, ring_scale_axes,
                         tweaks.keystone_h, tweaks.keystone_v,
-                        tweaks.paper_rotation_deg, tweaks.paper_scale,
+                        0.0, 1.0,
                         tweaks.keystone_d1, tweaks.keystone_d2,
                     )
-                    if built is not None:
-                        corners_image, paper_homography = built
+                    ring_homography = ring_built[1] if ring_built is not None else paper_homography
+                    paper_homography = ring_homography
+
+                    if render_overlay:
+                        color = (255, 180, 0)
                         cv2.polylines(
                             frame, [corners_image.astype(np.int32)],
                             True, (255, 0, 0), 2, cv2.LINE_AA,
                         )
-                        # The ring/scoring homography ignores the paper-only
-                        # tweaks so adjusting the rectangle never affects
-                        # actual scoring.
-                        ring_built = build_paper_corners_and_homography(
-                            bull_geom, ring_scale_axes,
-                            tweaks.keystone_h, tweaks.keystone_v,
-                            0.0, 1.0,
-                            tweaks.keystone_d1, tweaks.keystone_d2,
-                        )
-                        ring_homography = ring_built[1] if ring_built is not None else paper_homography
                         cx_mm = TARGET_PAPER_MM / 2.0
                         for diam in RING_DIAMETERS_MM:
                             pts = project_paper_circle(
@@ -873,20 +883,17 @@ def main():
                             frame, (int(bcx), int(bcy)), color,
                             cv2.MARKER_CROSS, 12, 1,
                         )
-                        # Use ring_homography for scoring downstream.
-                        paper_homography = ring_homography
-                else:
-                    cv2.rectangle(frame, (tx1, ty1), (tx2, ty2),
-                                  (255, 0, 0), 2)
-                    draw_target_rings(frame, tx1, ty1, tx2, ty2,
-                                      color=(255, 180, 0))
+            elif CALIBRATION_ENABLED and render_overlay:
+                cv2.rectangle(frame, (tx1, ty1), (tx2, ty2), (255, 0, 0), 2)
+                draw_target_rings(frame, tx1, ty1, tx2, ty2, color=(255, 180, 0))
 
-            # Draw past hits (pellet-sized circles)
-            scale_px_per_mm = (tx2 - tx1) / TARGET_PAPER_MM if tx2 > tx1 else 1.0
-            pellet_r_px = max(2, int(PELLET_DIAMETER_MM / 2.0 * scale_px_per_mm))
-            for hx, hy in hit_history:
-                cv2.circle(frame, (hx, hy), pellet_r_px, (0, 255, 255), 1, cv2.LINE_AA)
-                cv2.circle(frame, (hx, hy), 2, (0, 255, 255), -1, cv2.LINE_AA)
+            if render_overlay:
+                # Draw past hits (pellet-sized circles)
+                scale_px_per_mm = (tx2 - tx1) / TARGET_PAPER_MM if tx2 > tx1 else 1.0
+                pellet_r_px = max(2, int(PELLET_DIAMETER_MM / 2.0 * scale_px_per_mm))
+                for hx, hy in hit_history:
+                    cv2.circle(frame, (hx, hy), pellet_r_px, (0, 255, 255), 1, cv2.LINE_AA)
+                    cv2.circle(frame, (hx, hy), 2, (0, 255, 255), -1, cv2.LINE_AA)
 
             if detection is not None:
                 raw_x = detection["x"]
@@ -1081,7 +1088,7 @@ def main():
                             })
 
 
-            if SHOW_FPS:
+            if SHOW_FPS and render_overlay:
                 fps = fps_timer.update()
                 cv2.putText(
                     frame,
@@ -1094,7 +1101,7 @@ def main():
                     cv2.LINE_AA
                 )
 
-            if CAL_HUD_ENABLED:
+            if CAL_HUD_ENABLED and render_overlay:
                 # Calibration debug HUD: shows which calibration path is active so
                 # you can immediately see whether paper detection is working.
                 hud_txt = (
@@ -1114,9 +1121,8 @@ def main():
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, hud_color, 1, cv2.LINE_AA)
 
             # Only compute resized display buffers when we actually need them.
-            want_preview = control_state is not None and control_state.preview_wanted()
             display_frame = None
-            if not headless or want_preview:
+            if render_overlay:
                 display_frame = resize_to_fit(frame, DISPLAY_MAX_WIDTH, DISPLAY_MAX_HEIGHT)
 
             if not headless:

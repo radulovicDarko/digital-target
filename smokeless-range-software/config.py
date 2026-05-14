@@ -28,7 +28,7 @@ CAMERA_BACKEND = _os.environ.get("SHOOTERRANGE_CAMERA_BACKEND", "auto").lower()
 # is selected. Lower the framerate if CPU saturates on a Pi 4.
 PICAM_WIDTH = int(_os.environ.get("SHOOTERRANGE_PICAM_WIDTH", "960"))
 PICAM_HEIGHT = int(_os.environ.get("SHOOTERRANGE_PICAM_HEIGHT", "540"))
-PICAM_FPS = int(_os.environ.get("SHOOTERRANGE_PICAM_FPS", "60"))
+PICAM_FPS = int(_os.environ.get("SHOOTERRANGE_PICAM_FPS", "30"))
 
 # ---------------------------------------------------------------------------
 # Headless mode — no cv2.imshow / cv2.waitKey windows.

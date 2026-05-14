@@ -147,6 +147,45 @@ export const RootNavigator = () => {
         return;
       }
 
+      // Lightweight guard: if the Range is already attached to a different
+      // device, don't enter a WS reconnect loop (which floods journald on the Pi).
+      // Keep the socket closed and rely on the user's manual Retry.
+      if (healthUrl) {
+        const ac = new AbortController();
+        const timeout = setTimeout(() => ac.abort(), 2500);
+        try {
+          const r = await fetch(healthUrl, { signal: ac.signal });
+          if (r.ok) {
+            const body = (await r.json()) as {
+              ws?: {
+                attached?: boolean;
+                last_seen_age_s?: number | null;
+                timeout_s?: number;
+                client_id?: string | null;
+              };
+            };
+            const w = body.ws;
+            const alreadyAttached = !!w?.attached;
+            const attachedClientId = w?.client_id ?? null;
+            if (alreadyAttached && attachedClientId && attachedClientId !== clientId) {
+              const age = w?.last_seen_age_s ?? null;
+              const timeoutS = w?.timeout_s ?? null;
+              const remainingS =
+                age != null && timeoutS != null
+                  ? Math.max(0, Math.round(timeoutS - age))
+                  : undefined;
+              setAttachInfo({ kind: 'elsewhere', remainingS });
+              ws.close();
+              return;
+            }
+          }
+        } catch {
+          // Ignore — if health probe fails, fall back to normal WS connect.
+        } finally {
+          clearTimeout(timeout);
+        }
+      }
+
       if (__DEV__) {
         // eslint-disable-next-line no-console
         console.log('[ws] root attach start', { id: active.id, wsUrl: active.wsUrl, clientId });
