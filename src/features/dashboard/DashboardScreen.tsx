@@ -18,12 +18,16 @@ type Props = {
   onStartSession: () => void;
   onManagePis: () => void;
   onOpenSession: (sessionId: string) => void;
+  onDisconnect: () => void;
+  onRecalibrate: () => void;
 };
 
 export const DashboardScreen = ({
   onStartSession,
   onManagePis,
   onOpenSession,
+  onDisconnect,
+  onRecalibrate,
 }: Props) => {
   const { t } = useTranslation();
   const theme = useTheme();
@@ -95,7 +99,7 @@ export const DashboardScreen = ({
           {t('home.greeting')}
         </Text>
         <Card>
-          <Text>{t('errors.network')}</Text>
+          <Text>{t('home.noRangeConnected')}</Text>
           <Button onPress={onManagePis} style={{ marginTop: theme.spacing(3) }}>
             {t('pairing.title')}
           </Button>
@@ -154,14 +158,28 @@ export const DashboardScreen = ({
             <Text variant="h3" numberOfLines={1} style={{ flexShrink: 1 }}>
               {t('home.rangeStatus')}
             </Text>
-            <Button onPress={onManagePis} variant="ghost">
+            <Text variant="bodyBold" color="primary" numberOfLines={1} style={{ flexShrink: 1 }}>
               {active.name}
-            </Button>
+            </Text>
           </View>
           {health.isLoading ? (
             <Loading />
           ) : health.isError ? (
-            <ErrorState message={t('errors.network')} onRetry={() => void health.refetch()} />
+            <View style={{ marginTop: theme.spacing(2) }}>
+              <View style={styles.row}>
+                <StatusPill label={t('home.offline')} ok={false} />
+              </View>
+              <Text color="textMuted" style={{ marginTop: theme.spacing(2) }}>
+                {t('home.noRangeConnected')}
+              </Text>
+              <Button
+                onPress={onManagePis}
+                variant="secondary"
+                style={{ marginTop: theme.spacing(2) }}
+              >
+                {t('pairing.title')}
+              </Button>
+            </View>
           ) : (
             <View style={[styles.row, { marginTop: theme.spacing(2) }]}>
               <StatusPill label={t('home.online')} ok />
@@ -169,6 +187,25 @@ export const DashboardScreen = ({
               <StatusPill label={t('home.cameraOk')} ok />
             </View>
           )}
+
+          <View style={[styles.actionsRow, { marginTop: theme.spacing(2) }]}>
+            <Button
+              onPress={onRecalibrate}
+              variant="secondary"
+              testID="dashboard-recalibrate"
+              style={{ flex: 1 }}
+            >
+              {t('calibration.recalibrate')}
+            </Button>
+            <Button
+              onPress={onDisconnect}
+              variant="danger"
+              testID="dashboard-disconnect"
+              style={{ flex: 1 }}
+            >
+              {t('home.disconnect')}
+            </Button>
+          </View>
         </Card>
 
         {/* Quick stats */}
@@ -219,17 +256,32 @@ export const DashboardScreen = ({
 
 const StatusPill = ({ label, ok }: { label: string; ok: boolean }) => {
   const t = useTheme();
+  const tone = ok ? t.colors.success : t.colors.danger;
   return (
     <View
       accessibilityLabel={label}
       style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: t.spacing(1),
         paddingHorizontal: t.spacing(3),
         paddingVertical: t.spacing(1),
+        minHeight: t.spacing(7),
         borderRadius: t.radius.pill,
-        backgroundColor: ok ? `${t.colors.success}22` : `${t.colors.danger}22`,
+        backgroundColor: `${tone}22`,
+        borderWidth: 1,
+        borderColor: `${tone}44`,
       }}
     >
-      <Text variant="caption" color={ok ? 'success' : 'danger'}>
+      <View
+        style={{
+          width: t.spacing(2),
+          height: t.spacing(2),
+          borderRadius: t.spacing(1),
+          backgroundColor: tone,
+        }}
+      />
+      <Text variant="caption" color={ok ? 'success' : 'danger'} numberOfLines={1}>
         {label}
       </Text>
     </View>
@@ -251,7 +303,12 @@ const StatTile = ({ label, value }: { label: string; value: string }) => {
 };
 
 const styles = StyleSheet.create({
-  row: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  row: { flexDirection: 'row', gap: 8, flexWrap: 'wrap', alignItems: 'center' },
+  actionsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
+  },
   rowBetween: {
     flexDirection: 'row',
     alignItems: 'center',

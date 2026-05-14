@@ -16,6 +16,8 @@ type Props = {
   onStartSession: () => void;
   onManagePis: () => void;
   onOpenSession: (sessionId: string) => void;
+  onDisconnect: () => void;
+  onRecalibrate: () => void;
   onOpenDiagnostics?: () => void;
 };
 
@@ -30,6 +32,8 @@ export const TabsNavigator = ({
   onStartSession,
   onManagePis,
   onOpenSession,
+  onDisconnect,
+  onRecalibrate,
   onOpenDiagnostics,
 }: Props) => {
   const { t } = useTranslation();
@@ -59,6 +63,8 @@ export const TabsNavigator = ({
             onStartSession={onStartSession}
             onManagePis={onManagePis}
             onOpenSession={onOpenSession}
+            onDisconnect={onDisconnect}
+            onRecalibrate={onRecalibrate}
           />
         )}
       </Tab.Screen>

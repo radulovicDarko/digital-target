@@ -1,13 +1,11 @@
 import { useState } from 'react';
 
 import { PairingDiscoveryScreen } from './PairingDiscoveryScreen';
-import { PairingManualScreen } from './PairingManualScreen';
 import { PairingTrustScreen } from './PairingTrustScreen';
 import { PairingWifiHelpScreen } from './PairingWifiHelpScreen';
 
 type Step =
   | { name: 'discovery' }
-  | { name: 'manual' }
   | { name: 'wifi' }
   | { name: 'trust'; baseUrl: string; displayName: string };
 
@@ -21,13 +19,6 @@ export const PairingWizard = ({ onCompleted, onCancel }: Props) => {
   const [step, setStep] = useState<Step>({ name: 'discovery' });
 
   switch (step.name) {
-    case 'manual':
-      return (
-        <PairingManualScreen
-          onCancel={() => setStep({ name: 'discovery' })}
-          onSubmit={(baseUrl) => setStep({ name: 'trust', baseUrl, displayName: baseUrl })}
-        />
-      );
     case 'wifi':
       return <PairingWifiHelpScreen onBack={() => setStep({ name: 'discovery' })} />;
     case 'trust':
@@ -46,9 +37,7 @@ export const PairingWizard = ({ onCompleted, onCancel }: Props) => {
           onCandidateSelected={(baseUrl, displayName) =>
             setStep({ name: 'trust', baseUrl, displayName })
           }
-          onManual={() => setStep({ name: 'manual' })}
           onWifiInstructions={() => setStep({ name: 'wifi' })}
-          onPaired={() => onCompleted()}
           onCancel={onCancel}
         />
       );

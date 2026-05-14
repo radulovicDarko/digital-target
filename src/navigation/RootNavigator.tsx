@@ -50,6 +50,7 @@ export const RootNavigator = () => {
   const guest = useAuthStore((s) => s.guest);
   const active = usePairingStore((s) => s.active);
   const setActive = usePairingStore((s) => s.setActive);
+  const upsertPairing = usePairingStore((s) => s.upsert);
   const [attached, setAttached] = useState(false);
   const [attachAttempt, setAttachAttempt] = useState(0);
   const [clientId, setClientId] = useState<string | null>(null);
@@ -209,6 +210,14 @@ export const RootNavigator = () => {
     setActive(null);
   };
 
+  const recalibrateActive = async () => {
+    if (!active) return;
+    const updated = { ...active, calibrationConfirmedAt: null };
+    await securePairings.upsert(updated);
+    upsertPairing(updated);
+    setActive(updated);
+  };
+
   const AttachGate = ({
     onManage,
   }: {
@@ -278,6 +287,17 @@ export const RootNavigator = () => {
                       }
                       void logger.info('nav', 'onManagePis');
                       navigation.navigate('Pairing');
+                    }}
+                    onDisconnect={() => {
+                      void (async () => {
+                        await clearActivePairing();
+                        navigation.navigate('Pairing');
+                      })();
+                    }}
+                    onRecalibrate={() => {
+                      void (async () => {
+                        await recalibrateActive();
+                      })();
                     }}
                     onOpenSession={(sessionId) => {
                       if (__DEV__) {

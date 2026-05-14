@@ -1,10 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { ScrollView, StyleSheet, View } from 'react-native';
 
-import { buildDemoPairing } from '@/api/demo';
 import { Button, Card, Empty, Loading, Screen, ScreenHeader, Text } from '@/components';
-import { usePairingStore } from '@/state/pairingStore';
-import { securePairings } from '@/storage/securePairings';
 import { useTheme } from '@/theme';
 
 import { useApProbe } from './useApProbe';
@@ -12,35 +9,20 @@ import { useMdnsDiscovery } from './useMdnsDiscovery';
 
 type Props = {
   onCandidateSelected: (baseUrl: string, displayName: string) => void;
-  onManual: () => void;
   onWifiInstructions: () => void;
-  onPaired?: () => void;
   /** Optional dismiss handler shown as a back arrow in the header. */
   onCancel?: () => void;
 };
 
 export const PairingDiscoveryScreen = ({
   onCandidateSelected,
-  onManual,
   onWifiInstructions,
-  onPaired,
   onCancel,
 }: Props) => {
   const { t } = useTranslation();
   const theme = useTheme();
   const { services, scanning } = useMdnsDiscovery();
   const { probe, probing, candidates } = useApProbe();
-  const upsert = usePairingStore((s) => s.upsert);
-  const setActive = usePairingStore((s) => s.setActive);
-
-  const useDemo = async () => {
-    const demo = buildDemoPairing();
-    await securePairings.upsert(demo);
-    await securePairings.setActiveId(demo.id);
-    upsert(demo);
-    setActive(demo);
-    onPaired?.();
-  };
 
   return (
     <Screen testID="pairing-discovery">
@@ -52,8 +34,22 @@ export const PairingDiscoveryScreen = ({
 
       <ScrollView contentContainerStyle={{ gap: theme.spacing(3), paddingBottom: theme.spacing(6) }}>
         <Card>
-          <Text variant="h3">{t('pairing.scanning')}</Text>
-          <View style={[styles.row, { marginTop: theme.spacing(2) }]}>
+          <Text variant="h3">{t('pairing.wifiInstructionsTitle')}</Text>
+          <Text color="textMuted" style={{ marginTop: theme.spacing(1) }}>
+            {t('pairing.wifiInstructions')}
+          </Text>
+          <Button
+            onPress={onWifiInstructions}
+            variant="primary"
+            style={{ marginTop: theme.spacing(3) }}
+          >
+            {t('pairing.openWifiSettings')}
+          </Button>
+        </Card>
+
+        <Card>
+          <View style={styles.rowBetween}>
+            <Text variant="h3">{t('pairing.scanning')}</Text>
             <Button onPress={() => void probe()} variant="secondary" testID="pairing-rescan">
               {t('pairing.rescan')}
             </Button>
@@ -97,39 +93,6 @@ export const PairingDiscoveryScreen = ({
             </Card>
           ))}
         </Card>
-
-        <Card>
-          <Text variant="h3">{t('pairing.wifiInstructionsTitle')}</Text>
-          <Text color="textMuted" style={{ marginTop: theme.spacing(1) }}>
-            {t('pairing.wifiInstructions')}
-          </Text>
-          <Button
-            onPress={onWifiInstructions}
-            variant="secondary"
-            style={{ marginTop: theme.spacing(3) }}
-          >
-            {t('pairing.openWifiSettings')}
-          </Button>
-        </Card>
-
-        <Button onPress={onManual} variant="ghost">
-          {t('pairing.manualIp')}
-        </Button>
-
-        <Card style={{ borderStyle: 'dashed' }}>
-          <Text variant="h3">{t('pairing.demoTitle')}</Text>
-          <Text color="textMuted" style={{ marginTop: theme.spacing(1) }}>
-            {t('pairing.demoBody')}
-          </Text>
-          <Button
-            onPress={() => void useDemo()}
-            variant="primary"
-            testID="pairing-use-demo"
-            style={{ marginTop: theme.spacing(3) }}
-          >
-            {t('pairing.useDemo')}
-          </Button>
-        </Card>
       </ScrollView>
     </Screen>
   );
@@ -137,4 +100,5 @@ export const PairingDiscoveryScreen = ({
 
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' },
 });

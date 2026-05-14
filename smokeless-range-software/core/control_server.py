@@ -840,7 +840,7 @@ def start_control_server(
     host: str = "0.0.0.0",
     port: int = 8080,
     version: str = "0.1.0",
-    device_name: str = "ShooterRange",
+    device_name: str = "etarget-1",
     device_id: str = "shooterrange-pi",
     auth_token: str = "dev-token",
 ) -> ThreadingHTTPServer:
