@@ -4,6 +4,7 @@ import { Alert, StyleSheet, View } from 'react-native';
 
 import { ApiError, pairExchange, pairProbe } from '@/api/client';
 import { Button, Card, ErrorState, Loading, Screen, Text } from '@/components';
+import { useAuthStore } from '@/state/authStore';
 import { usePairingStore } from '@/state/pairingStore';
 import { logger } from '@/storage/logger';
 import { securePairings } from '@/storage/securePairings';
@@ -37,6 +38,10 @@ const fakeFingerprintFor = (baseUrl: string): string => {
 export const PairingTrustScreen = ({ baseUrl, displayName, onPaired, onBack }: Props) => {
   const { t } = useTranslation();
   const theme = useTheme();
+  const user = useAuthStore((s) => s.user);
+  const guest = useAuthStore((s) => s.guest);
+  const setUser = useAuthStore((s) => s.setUser);
+  const exitGuest = useAuthStore((s) => s.exitGuest);
   const upsert = usePairingStore((s) => s.upsert);
   const setActive = usePairingStore((s) => s.setActive);
 
@@ -93,6 +98,17 @@ export const PairingTrustScreen = ({ baseUrl, displayName, onPaired, onBack }: P
     }
   };
 
+  const authLabel = guest ? t('auth.loginButton') : user ? t('auth.logout') : null;
+  const onAuthPress = () => {
+    if (guest) {
+      exitGuest();
+      return;
+    }
+    if (user) {
+      setUser(null);
+    }
+  };
+
   if (loading) return <Loading label={t('common.loading')} />;
   if (error) return <ErrorState message={error} onRetry={onBack} />;
 
@@ -121,6 +137,17 @@ export const PairingTrustScreen = ({ baseUrl, displayName, onPaired, onBack }: P
           {t('pairing.trustButton')}
         </Button>
       </View>
+
+      {authLabel ? (
+        <Button
+          onPress={onAuthPress}
+          variant="ghost"
+          style={{ marginTop: theme.spacing(2) }}
+          testID="pairing-auth-action"
+        >
+          {authLabel}
+        </Button>
+      ) : null}
     </Screen>
   );
 };

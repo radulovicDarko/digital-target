@@ -1,8 +1,9 @@
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ScrollView, StyleSheet, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { Button, Card, Empty, Loading, Screen, ScreenHeader, Text } from '@/components';
+import { useAuthStore } from '@/state/authStore';
 import { useTheme } from '@/theme';
 
 import { useApProbe } from './useApProbe';
@@ -22,8 +23,23 @@ export const PairingDiscoveryScreen = ({
 }: Props) => {
   const { t } = useTranslation();
   const theme = useTheme();
+  const user = useAuthStore((s) => s.user);
+  const guest = useAuthStore((s) => s.guest);
+  const setUser = useAuthStore((s) => s.setUser);
+  const exitGuest = useAuthStore((s) => s.exitGuest);
   const { services, scanning } = useMdnsDiscovery();
   const { probe, probing, candidates } = useApProbe();
+
+  const authLabel = guest ? t('auth.loginButton') : user ? t('auth.logout') : null;
+  const onAuthPress = () => {
+    if (guest) {
+      exitGuest();
+      return;
+    }
+    if (user) {
+      setUser(null);
+    }
+  };
 
   useEffect(() => {
     void probe();
@@ -36,6 +52,27 @@ export const PairingDiscoveryScreen = ({
         title={t('pairing.title')}
         subtitle={t('pairing.subtitle')}
         onBack={onCancel}
+        right={
+          authLabel ? (
+            <Pressable
+              onPress={onAuthPress}
+              accessibilityRole="button"
+              hitSlop={theme.hitSlop}
+              style={({ pressed }) => [
+                {
+                  opacity: pressed ? 0.7 : 1,
+                  paddingHorizontal: theme.spacing(2),
+                  paddingVertical: theme.spacing(1),
+                },
+              ]}
+              testID="pairing-auth-action"
+            >
+              <Text variant="bodyBold" color="primary">
+                {authLabel}
+              </Text>
+            </Pressable>
+          ) : null
+        }
       />
 
       <ScrollView contentContainerStyle={{ gap: theme.spacing(3), paddingBottom: theme.spacing(6) }}>

@@ -48,6 +48,8 @@ export const RootNavigator = () => {
   const theme = useTheme();
   const user = useAuthStore((s) => s.user);
   const guest = useAuthStore((s) => s.guest);
+  const setUser = useAuthStore((s) => s.setUser);
+  const exitGuest = useAuthStore((s) => s.exitGuest);
   const active = usePairingStore((s) => s.active);
   const setActive = usePairingStore((s) => s.setActive);
   const upsertPairing = usePairingStore((s) => s.upsert);
@@ -214,6 +216,26 @@ export const RootNavigator = () => {
       <Button variant="ghost" onPress={() => void onManage()}>
         Manage Pairing
       </Button>
+
+      {guest ? (
+        <Button
+          variant="ghost"
+          onPress={() => exitGuest()}
+          accessibilityLabel="Log in"
+          testID="attach-auth-login"
+        >
+          Log in
+        </Button>
+      ) : user ? (
+        <Button
+          variant="ghost"
+          onPress={() => setUser(null)}
+          accessibilityLabel="Log out"
+          testID="attach-auth-logout"
+        >
+          Log out
+        </Button>
+      ) : null}
     </Screen>
   );
 
