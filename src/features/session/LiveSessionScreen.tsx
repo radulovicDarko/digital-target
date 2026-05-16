@@ -13,7 +13,7 @@ import { useQueryClient } from '@tanstack/react-query';
 
 import { useApiClient, useTargetConfigQuery } from '@/api/hooks';
 import type { ApiClient } from '@/api/client';
-import { Button, Card, ErrorState, Loading, Screen, Text } from '@/components';
+import { Card, ErrorState, Loading, Screen, Text } from '@/components';
 import { useLiveSessionStore } from '@/state/liveSessionStore';
 import { usePairingStore } from '@/state/pairingStore';
 import { useSettingsStore } from '@/state/settingsStore';
@@ -98,7 +98,7 @@ export const LiveSessionScreen = ({
   const pollAttemptRef = useRef(0);
   const pollClientIdRef = useRef<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
-  const [canvasArea, setCanvasArea] = useState({ width: 0, height: 0 });
+  const [targetAreaWidth, setTargetAreaWidth] = useState(0);
   const [focusedHitTs, setFocusedHitTs] = useState<number | null>(null);
   // The replacement for the OS Alert end-of-session popup. We open it from
   // the auto-end effect and close it via the modal's own buttons.
@@ -472,19 +472,16 @@ export const LiveSessionScreen = ({
     discipline: target.data.discipline,
   };
 
-  const onCanvasLayout = (e: LayoutChangeEvent): void => {
-    const { width, height } = e.nativeEvent.layout;
-    if (Math.abs(width - canvasArea.width) > 0.5 || Math.abs(height - canvasArea.height) > 0.5) {
-      setCanvasArea({ width, height });
+  const onTargetAreaLayout = (e: LayoutChangeEvent): void => {
+    const { width } = e.nativeEvent.layout;
+    if (Math.abs(width - targetAreaWidth) > 0.5) {
+      setTargetAreaWidth(width);
     }
   };
 
-  // Cap the canvas to whichever dimension is smaller so it never overlaps
-  // the scoreboard or the action row.
-  const targetSize =
-    canvasArea.width > 0 && canvasArea.height > 0
-      ? Math.max(120, Math.floor(Math.min(canvasArea.width, canvasArea.height) - 8))
-      : 0;
+  // Size the target from available width, not leftover height.
+  // This keeps the visualization large even on shorter phones.
+  const targetSize = targetAreaWidth > 0 ? Math.max(120, Math.floor(targetAreaWidth - 8)) : 0;
 
   const sessionDone = status === 'ended' && shotCount > 0;
   const displayTargetIndex = Math.min(targetIndex, targetsPerSession);
@@ -523,19 +520,7 @@ export const LiveSessionScreen = ({
         </Card>
       ) : null}
 
-      {reconnecting ? (
-        <Card style={{ backgroundColor: theme.colors.warning }}>
-          <Text color="textInverse">{t('session.reconnecting')}</Text>
-        </Card>
-      ) : null}
-
-      {status === 'paused' && !reconnecting ? (
-        <Card style={{ backgroundColor: theme.colors.info }}>
-          <Text color="textInverse">{t('session.pausedBanner')}</Text>
-        </Card>
-      ) : null}
-
-      <View style={styles.targetWrap} onLayout={onCanvasLayout}>
+      <View style={styles.targetArea} onLayout={onTargetAreaLayout}>
         {targetSize > 0 ? (
           <LiveTargetCanvas
             size={targetSize}
@@ -546,83 +531,100 @@ export const LiveSessionScreen = ({
             highlightTs={focusedHitTs}
           />
         ) : null}
+
+        {/* Status banners are an overlay so they never steal height from the target. */}
+        {reconnecting ? (
+          <View pointerEvents="none" style={[styles.bannerOverlay, { top: theme.spacing(1) }]}>
+            <Card
+              padded={false}
+              style={[
+                styles.bannerCard,
+                { backgroundColor: theme.colors.warning, borderColor: theme.colors.warning },
+              ]}
+            >
+              <Text variant="caption" color="textInverse">
+                {t('session.reconnecting')}
+              </Text>
+            </Card>
+          </View>
+        ) : status === 'paused' ? (
+          <View pointerEvents="none" style={[styles.bannerOverlay, { top: theme.spacing(1) }]}>
+            <Card
+              padded={false}
+              style={[
+                styles.bannerCard,
+                { backgroundColor: theme.colors.info, borderColor: theme.colors.info },
+              ]}
+            >
+              <Text variant="caption" color="textInverse">
+                {t('session.pausedBanner')}
+              </Text>
+            </Card>
+          </View>
+        ) : null}
       </View>
 
-      {/* Two-tier control area:
-          1. Toggle row — icon-only chips for view options (sound, group
-             ellipse, MPI). Compact, fixed 44×44 hit targets, side-by-side.
-          2. Action row — text buttons for state-changing actions (pause,
-             reset, end). Each grows to share the row width evenly so the
-             layout works the same in EN and SR translations and on narrow
-             phones (wraps onto multiple rows when needed). */}
-      <View style={styles.toggleRow}>
-        <IconToggle
-          icon={soundEnabled ? 'volume-high' : 'volume-mute'}
-          active={soundEnabled}
-          onPress={() => setSoundEnabled(!soundEnabled)}
-          accessibilityLabel={
-            soundEnabled ? t('session.toggleSoundOn') : t('session.toggleSoundOff')
-          }
-          testID="live-sound-toggle"
-        />
-        <IconToggle
-          icon="ellipse-outline"
-          active={showGroupEllipse}
-          onPress={() => setShowGroupEllipse(!showGroupEllipse)}
-          accessibilityLabel={t('session.toggleGroup')}
-          testID="live-group-toggle"
-        />
-        <IconToggle
-          icon="locate"
-          active={showMpi}
-          onPress={() => setShowMpi(!showMpi)}
-          accessibilityLabel={t('session.toggleMpi')}
-          testID="live-mpi-toggle"
-        />
-      </View>
+      <View style={styles.bottomDock}>
+        <View style={styles.controlsRow}>
+          <IconToggle
+            icon={soundEnabled ? 'volume-high' : 'volume-mute'}
+            active={soundEnabled}
+            onPress={() => setSoundEnabled(!soundEnabled)}
+            accessibilityLabel={
+              soundEnabled ? t('session.toggleSoundOn') : t('session.toggleSoundOff')
+            }
+            testID="live-sound-toggle"
+          />
+          <IconToggle
+            icon="ellipse-outline"
+            active={showGroupEllipse}
+            onPress={() => setShowGroupEllipse(!showGroupEllipse)}
+            accessibilityLabel={t('session.toggleGroup')}
+            testID="live-group-toggle"
+          />
+          <IconToggle
+            icon="locate"
+            active={showMpi}
+            onPress={() => setShowMpi(!showMpi)}
+            accessibilityLabel={t('session.toggleMpi')}
+            testID="live-mpi-toggle"
+          />
 
-      <View style={styles.actionRow}>
-        <View style={styles.actionBtn}>
-          <Button
-            onPress={() => setStatus(status === 'paused' ? 'running' : 'paused')}
+          <View style={styles.controlsSpacer} />
+
+          <IconAction
+            icon={status === 'paused' ? 'play' : 'pause'}
             variant={status === 'paused' ? 'primary' : 'secondary'}
+            onPress={() => setStatus(status === 'paused' ? 'running' : 'paused')}
             accessibilityLabel={
               status === 'paused' ? t('session.resume') : t('a11y.pauseSession')
             }
             testID="live-pause"
             disabled={sessionDone}
-          >
-            {status === 'paused' ? t('session.resume') : t('session.pause')}
-          </Button>
-        </View>
-        <View style={styles.actionBtn}>
-          <Button
-            onPress={onReset}
+          />
+          <IconAction
+            icon="refresh"
             variant="secondary"
+            onPress={onReset}
             accessibilityLabel={t('a11y.resetSession')}
             testID="live-reset"
-          >
-            {t('session.reset')}
-          </Button>
-        </View>
-        <View style={styles.actionBtn}>
-          <Button
-            onPress={onEnd}
+          />
+          <IconAction
+            icon="stop"
             variant={sessionDone ? 'primary' : 'danger'}
+            onPress={onEnd}
             accessibilityLabel={t('a11y.endSession')}
             testID="live-end"
-          >
-            {sessionDone ? t('session.finish') : t('session.end')}
-          </Button>
+          />
         </View>
-      </View>
 
-      <ShotStrip
-        hits={hits}
-        max={shotsPerTarget}
-        focusedTs={focusedHitTs}
-        onPickHit={(ts) => setFocusedHitTs((prev) => (prev === ts ? null : ts))}
-      />
+        <ShotStrip
+          hits={hits}
+          max={shotsPerTarget}
+          focusedTs={focusedHitTs}
+          onPickHit={(ts) => setFocusedHitTs((prev) => (prev === ts ? null : ts))}
+        />
+      </View>
 
       <SessionSummaryModal
         visible={showSummary}
@@ -766,8 +768,86 @@ const IconToggle = ({
   );
 };
 
+type IconActionVariant = 'secondary' | 'primary' | 'danger';
+
+type IconActionProps = {
+  icon: keyof typeof Ionicons.glyphMap;
+  variant: IconActionVariant;
+  onPress: () => void;
+  accessibilityLabel: string;
+  testID?: string;
+  disabled?: boolean;
+};
+
+/** 44×44 icon action button matching the toggle pills. */
+const IconAction = ({
+  icon,
+  variant,
+  onPress,
+  accessibilityLabel,
+  testID,
+  disabled = false,
+}: IconActionProps) => {
+  const theme = useTheme();
+  const tint =
+    variant === 'primary'
+      ? theme.colors.primary
+      : variant === 'danger'
+        ? theme.colors.danger
+        : theme.colors.border;
+  const bg =
+    variant === 'primary'
+      ? `${theme.colors.primary}22`
+      : variant === 'danger'
+        ? `${theme.colors.danger}22`
+        : theme.colors.surfaceAlt;
+  const fg =
+    variant === 'primary'
+      ? theme.colors.primary
+      : variant === 'danger'
+        ? theme.colors.danger
+        : theme.colors.textMuted;
+
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityState={{ disabled }}
+      testID={testID}
+      hitSlop={theme.hitSlop}
+      style={({ pressed }) => [
+        styles.iconToggle,
+        {
+          backgroundColor: bg,
+          borderColor: tint,
+          borderRadius: theme.radius.md,
+          opacity: disabled ? 0.35 : pressed ? 0.7 : 1,
+        },
+      ]}
+    >
+      <Ionicons name={icon} size={20} color={fg} />
+    </Pressable>
+  );
+};
+
 const styles = StyleSheet.create({
-  targetWrap: { alignItems: 'center', justifyContent: 'center', flex: 1 },
+  targetArea: { flex: 1, alignItems: 'center', justifyContent: 'center', position: 'relative' },
+  bannerOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+  },
+  bannerCard: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderWidth: 1,
+  },
+  bottomDock: { gap: 8 },
+  controlsRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  controlsSpacer: { flex: 1 },
   rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   shotStrip: { gap: 8, paddingVertical: 4 },
   shotCard: {
@@ -782,13 +862,6 @@ const styles = StyleSheet.create({
   // Always-rendered trend row. Same height (~16 px icon + 2 px gap) whether
   // the slot has a hit or not, so the card doesn't reflow on the first hit.
   trendSlot: { marginTop: 2, height: 16, alignItems: 'center', justifyContent: 'center' },
-  // Compact icon toggles row — sound, group ellipse, MPI. Stays on a single
-  // line on every screen size because each toggle is only 44 px wide.
-  toggleRow: { flexDirection: 'row', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
-  // Action buttons share the row width evenly via flex; on narrow screens
-  // each button gets its own row (flexWrap + flexBasis fallback).
-  actionRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap', alignItems: 'stretch' },
-  actionBtn: { flexGrow: 1, flexBasis: 120, minWidth: 0 },
   iconToggle: {
     width: 44,
     height: 44,

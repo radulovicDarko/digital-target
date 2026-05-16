@@ -34,7 +34,7 @@ export const Scoreboard = ({
     lastRing != null ? theme.colors.ringPalette[lastRing] ?? theme.colors.text : theme.colors.text;
 
   return (
-    <Card style={{ padding: theme.spacing(3) }}>
+    <Card style={{ paddingHorizontal: theme.spacing(2), paddingVertical: theme.spacing(2) }}>
       <View
         accessibilityLiveRegion="polite"
         accessibilityLabel={t('a11y.scoreboard', { total, shots, avg })}
@@ -44,7 +44,7 @@ export const Scoreboard = ({
             <Text variant="caption" color="textMuted">
               {t('session.total')}
             </Text>
-            <Text variant="h1">{total}</Text>
+            <Text variant="h2">{total}</Text>
           </View>
           <View
             style={[
@@ -59,13 +59,13 @@ export const Scoreboard = ({
             <Text variant="caption" color="textMuted">
               {t('session.last')}
             </Text>
-            <Text variant="h1" style={{ color: lastColor }}>
+            <Text variant="h2" style={{ color: lastColor }}>
               {lastScore == null ? '—' : lastScore}
             </Text>
           </View>
         </View>
 
-        <View style={[styles.statsRow, { marginTop: theme.spacing(2) }]}>
+        <View style={[styles.statsRow, { marginTop: theme.spacing(1) }]}>
           <Stat label={t('session.shots')} value={`${shots}`} />
           <Stat label={t('session.avg')} value={avg} />
           <Stat label={t('session.innerTens')} value={`${innerTens}`} />
@@ -81,7 +81,7 @@ const Stat = ({ label, value }: { label: string; value: string }) => (
     <Text variant="caption" color="textMuted">
       {label}
     </Text>
-    <Text variant="h3">{value}</Text>
+    <Text variant="bodyBold">{value}</Text>
   </View>
 );
 
@@ -91,7 +91,7 @@ const styles = StyleSheet.create({
     minWidth: 84,
     alignItems: 'center',
     paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingVertical: 4,
     borderWidth: 1,
   },
   statsRow: { flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 },
