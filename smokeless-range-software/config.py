@@ -142,6 +142,50 @@ PELLET_DIAMETER_MM = 4.5
 # Black bull covers rings 7..10 (diameter 59.5 mm)
 
 # ---------------------------------------------------------------------------
+# v2 fixed-center radial scoring (experimental, fully reversible)
+#
+# When SCORING_MODE == "fixed_center" the app skips bull/paper/keystone
+# detection entirely and scores purely by radial distance from a FIXED image
+# centre using a single mm-per-pixel constant. This is the deterministic path
+# for the "camera behind the paper" box, where a Camera Module 3 is mounted
+# square-on and centred behind the target and reads the laser shining through
+# the paper. Set SCORING_MODE back to "legacy" to restore the original
+# perspective-corrected detection pipeline 1:1 — nothing else needs changing.
+# ---------------------------------------------------------------------------
+SCORING_MODE = "fixed_center"  # "legacy" | "fixed_center"
+
+# Physical target used by the fixed-center path. Custom (non-ISSF) face:
+# outer ring 1 = 83 mm, rings step 9 mm in diameter, the 10 is a 2 mm centre
+# dot fused with ring 9. Index 0 = ring 1 (outer) … index 9 = ring 10 (centre).
+# Change these if you print a different face.
+RING_DIAMETERS_V2_MM = (83.0, 74.0, 65.0, 56.0, 47.0, 38.0, 29.0, 20.0, 11.0, 2.0)
+INNER_TEN_V2_MM = 2.0    # the 10 is a 2 mm dot (no separate inner-X ring)
+PELLET_V2_MM = 4.5       # airgun diabolo — virtual pellet-edge disc
+
+# Millimetres per pixel at the paper plane. Measure once: capture a frame with
+# the printed target in the box, read ring-1 diameter in pixels, then
+# FIXED_MM_PER_PX = 83.0 / ring1_diameter_px. Overridden at runtime by
+# fixed_calibration.json if present (see core/calibration.py).
+FIXED_MM_PER_PX = 0.18
+
+# Per-unit centre correction, in pixels, added to the image centre. Lets each
+# assembled box nudge the optical centre onto the true target centre without
+# touching anything else. Positive X = right, positive Y = down.
+FIXED_CENTER_OFFSET_X_PX = 0.0
+FIXED_CENTER_OFFSET_Y_PX = 0.0
+
+# The camera views the paper from BEHIND, so the horizontal axis is mirrored.
+# MIRROR_X flips it back so a hit to the shooter's right shows on the right.
+# Vertical is unaffected unless the module is mounted upside down.
+FIXED_MIRROR_X = True
+FIXED_MIRROR_Y = False
+
+# Paper span (mm) reported to the mobile app for the v2 face, so the on-screen
+# rings + hits render at the same scale the Pi scores at. Slightly larger than
+# ring 1 so there's a visible paper margin around the outer ring.
+TARGET_PAPER_V2_MM = 90.0
+
+# ---------------------------------------------------------------------------
 # Mobile control server (HTTP API + MJPEG preview consumed by the React Native
 # app). On Raspberry Pi 5 acting as a Wi-Fi AP, the mobile app connects to
 # http://<pi-ap-ip>:CONTROL_SERVER_PORT (e.g. http://192.168.4.1:8080).

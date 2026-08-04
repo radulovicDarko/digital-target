@@ -40,6 +40,16 @@ from config import (
     RING_DIAMETERS_MM,
     INNER_TEN_DIAMETER_MM,
     PELLET_DIAMETER_MM,
+    SCORING_MODE,
+    RING_DIAMETERS_V2_MM,
+    INNER_TEN_V2_MM,
+    PELLET_V2_MM,
+    FIXED_MM_PER_PX,
+    FIXED_CENTER_OFFSET_X_PX,
+    FIXED_CENTER_OFFSET_Y_PX,
+    FIXED_MIRROR_X,
+    FIXED_MIRROR_Y,
+    TARGET_PAPER_V2_MM,
     CONTROL_SERVER_ENABLED,
     CONTROL_SERVER_HOST,
     CONTROL_SERVER_PORT,
@@ -70,6 +80,8 @@ from core.calibration_tweaks import (
     load_tweaks,
     save_tweaks,
 )
+from core.scoring import RadialScorer
+from core.calibration import load_fixed_calibration
 def clamp01(v):
     return max(0.0, min(1.0, v))
 
@@ -558,16 +570,56 @@ def main():
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
         cv2.namedWindow("Laser Mask", cv2.WINDOW_AUTOSIZE)
 
+    # v2 fixed-center scorer (only used when SCORING_MODE == "fixed_center").
+    # Built once; loads any persisted mm-per-px / centre offset over the config
+    # defaults so a calibrated box survives restarts. The legacy path ignores it.
+    fixed_cal = load_fixed_calibration({
+        "mm_per_px": FIXED_MM_PER_PX,
+        "center_offset_x_px": FIXED_CENTER_OFFSET_X_PX,
+        "center_offset_y_px": FIXED_CENTER_OFFSET_Y_PX,
+    })
+    radial_scorer = None
+    if SCORING_MODE == "fixed_center":
+        radial_scorer = RadialScorer(
+            ring_diameters_mm=RING_DIAMETERS_V2_MM,
+            inner_ten_mm=INNER_TEN_V2_MM,
+            pellet_mm=PELLET_V2_MM,
+            mm_per_px=fixed_cal["mm_per_px"],
+            paper_span_mm=TARGET_PAPER_V2_MM,
+            center_offset_px=(fixed_cal["center_offset_x_px"],
+                              fixed_cal["center_offset_y_px"]),
+            mirror_x=FIXED_MIRROR_X,
+            mirror_y=FIXED_MIRROR_Y,
+        )
+        print(f"[scoring] fixed_center mode: mm_per_px={fixed_cal['mm_per_px']:.5f} "
+              f"offset=({fixed_cal['center_offset_x_px']:+.1f},"
+              f"{fixed_cal['center_offset_y_px']:+.1f})px "
+              f"mirror=({FIXED_MIRROR_X},{FIXED_MIRROR_Y})")
+
     # Mobile control server (HTTP API + MJPEG preview).
     control_state = None
     if CONTROL_SERVER_ENABLED:
-        control_state = ControlState(target_config={
-            "paper_mm": float(TARGET_PAPER_MM),
-            "ring_diameters_mm": list(RING_DIAMETERS_MM),
-            "inner_ten_mm": float(INNER_TEN_DIAMETER_MM),
-            "pellet_mm": float(PELLET_DIAMETER_MM),
-            "discipline": "ISSF 10m Air Pistol",
-        }, hit_log_enabled=SERVER_HIT_LOG_ENABLED, hit_log_every=SERVER_HIT_LOG_EVERY)
+        if SCORING_MODE == "fixed_center":
+            target_config = {
+                "paper_mm": float(TARGET_PAPER_V2_MM),
+                "ring_diameters_mm": list(RING_DIAMETERS_V2_MM),
+                "inner_ten_mm": float(INNER_TEN_V2_MM),
+                "pellet_mm": float(PELLET_V2_MM),
+                "discipline": "Custom 83mm (fixed-center)",
+            }
+        else:
+            target_config = {
+                "paper_mm": float(TARGET_PAPER_MM),
+                "ring_diameters_mm": list(RING_DIAMETERS_MM),
+                "inner_ten_mm": float(INNER_TEN_DIAMETER_MM),
+                "pellet_mm": float(PELLET_DIAMETER_MM),
+                "discipline": "ISSF 10m Air Pistol",
+            }
+        control_state = ControlState(
+            target_config=target_config,
+            hit_log_enabled=SERVER_HIT_LOG_ENABLED,
+            hit_log_every=SERVER_HIT_LOG_EVERY,
+        )
         try:
             start_control_server(
                 control_state,
@@ -943,7 +995,19 @@ def main():
                 send_detection = None
                 reject_reason = None
 
-                if CALIBRATION_ENABLED:
+                if radial_scorer is not None:
+                    # v2 fixed-center mode: no ROI rectangle, no perspective
+                    # calibration. The whole frame is scored radially, so accept
+                    # the raw detection directly. Final mirror-corrected nx/ny
+                    # are computed by the scorer in the scoring block below.
+                    send_detection = {
+                        "x": raw_x,
+                        "y": raw_y,
+                        "area": area,
+                        "nx": raw_nx,
+                        "ny": raw_ny,
+                    }
+                elif CALIBRATION_ENABLED:
                     inside_roi = point_inside_target(
                         raw_x, raw_y,
                         tx1, ty1,
@@ -994,7 +1058,9 @@ def main():
 
                 # Don't register hits until calibration is confirmed (frozen with 'n').
                 # IMPORTANT: don't consume detector cooldown if we're not allowed to fire.
-                if not (align_frozen or not auto_align):
+                # The v2 fixed-center path has no calibration-freeze step, so it
+                # is always allowed to fire.
+                if radial_scorer is None and not (align_frozen or not auto_align):
                     _log_reject(
                         "not_frozen",
                         raw=f"({raw_x},{raw_y})",
@@ -1017,65 +1083,85 @@ def main():
                     send_ny = send_detection["ny"]
                     unity_ny = 1.0 - send_ny if UNITY_INVERT_Y else send_ny
 
-                    # Default fallback (no calibration): rectangle scoring.
-                    hit_score, hit_dist, hit_maxr, _ = score_for_hit(
-                        raw_x, raw_y, tx1, ty1, tx2, ty2
-                    )
-                    x_mm_centered = 0.0
-                    y_mm_centered = 0.0
-                    is_inner_ten = False
+                    if radial_scorer is not None:
+                        # v2 deterministic fixed-center scoring: pure radial
+                        # distance from the fixed image centre, no bull/paper/
+                        # homography detection at all. The camera sits square-on
+                        # behind the paper, so the geometry is a known constant.
+                        rh = radial_scorer.score(raw_x, raw_y, frame_w, frame_h)
+                        hit_score = rh.score
+                        hit_dist = rh.dist_mm
+                        hit_maxr = rh.max_radius_mm
+                        x_mm_centered = rh.x_mm
+                        y_mm_centered = rh.y_mm
+                        is_inner_ten = rh.is_inner_ten
+                        # Mirror-corrected normalised position for display/unity
+                        # and for the mobile publish below.
+                        send_nx = rh.x_norm
+                        send_ny = rh.y_norm
+                        send_detection["nx"] = rh.x_norm
+                        send_detection["ny"] = rh.y_norm
+                        unity_ny = 1.0 - send_ny if UNITY_INVERT_Y else send_ny
+                    else:
+                        # Default fallback (no calibration): rectangle scoring.
+                        hit_score, hit_dist, hit_maxr, _ = score_for_hit(
+                            raw_x, raw_y, tx1, ty1, tx2, ty2
+                        )
+                        x_mm_centered = 0.0
+                        y_mm_centered = 0.0
+                        is_inner_ten = False
 
-                    if paper_homography is not None:
-                        # Best path: invert the paper homography so the
-                        # pellet pixel goes straight into paper-mm space.
-                        # This is the only correct way to handle keystone.
-                        h_image_to_paper = np.linalg.inv(paper_homography)
-                        pt = np.array([[[float(raw_x), float(raw_y)]]],
-                                      dtype=np.float32)
-                        out = cv2.perspectiveTransform(pt, h_image_to_paper)
-                        px_mm = float(out[0, 0, 0])
-                        py_mm = float(out[0, 0, 1])
-                        cx_mm = TARGET_PAPER_MM / 2.0
-                        x_mm_centered = px_mm - cx_mm
-                        y_mm_centered = py_mm - cx_mm
-                        dist_mm = math.hypot(x_mm_centered, y_mm_centered)
-                        pellet_r = PELLET_DIAMETER_MM / 2.0
-                        best = 0
-                        for idx, diam in enumerate(RING_DIAMETERS_MM):
-                            if dist_mm - pellet_r <= diam / 2.0:
-                                best = max(best, idx + 1)
-                        hit_score = best
-                        hit_dist = dist_mm
-                        is_inner_ten = (
-                            hit_score == 10
-                            and (dist_mm + pellet_r) <= (INNER_TEN_DIAMETER_MM / 2.0)
-                        )
-                    elif bull_geom is not None and ring_scale_axes is not None:
-                        # Fallback: score against the ring-1-scaled ellipse frame.
-                        bcx, bcy, ba, bb, bang = bull_geom
-                        Pa_px, Pb_px = ring_scale_axes
-                        theta = math.radians(bang)
-                        cos_t, sin_t = math.cos(theta), math.sin(theta)
-                        dx = raw_x - bcx
-                        dy = raw_y - bcy
-                        rx = dx * cos_t + dy * sin_t
-                        ry = -dx * sin_t + dy * cos_t
-                        outer_mm = RING_DIAMETERS_MM[0] / 2.0
-                        nd = math.hypot(rx / Pa_px, ry / Pb_px)  # 1.0 == ring 1 edge
-                        dist_mm = nd * outer_mm
-                        pellet_r = PELLET_DIAMETER_MM / 2.0
-                        best = 0
-                        for idx, diam in enumerate(RING_DIAMETERS_MM):
-                            if dist_mm - pellet_r <= diam / 2.0:
-                                best = max(best, idx + 1)
-                        hit_score = best
-                        hit_dist = dist_mm
-                        x_mm_centered = (rx / max(Pa_px, 1e-6)) * outer_mm
-                        y_mm_centered = (ry / max(Pb_px, 1e-6)) * outer_mm
-                        is_inner_ten = (
-                            hit_score == 10
-                            and (dist_mm + pellet_r) <= (INNER_TEN_DIAMETER_MM / 2.0)
-                        )
+                        if paper_homography is not None:
+                            # Best path: invert the paper homography so the
+                            # pellet pixel goes straight into paper-mm space.
+                            # This is the only correct way to handle keystone.
+                            h_image_to_paper = np.linalg.inv(paper_homography)
+                            pt = np.array([[[float(raw_x), float(raw_y)]]],
+                                          dtype=np.float32)
+                            out = cv2.perspectiveTransform(pt, h_image_to_paper)
+                            px_mm = float(out[0, 0, 0])
+                            py_mm = float(out[0, 0, 1])
+                            cx_mm = TARGET_PAPER_MM / 2.0
+                            x_mm_centered = px_mm - cx_mm
+                            y_mm_centered = py_mm - cx_mm
+                            dist_mm = math.hypot(x_mm_centered, y_mm_centered)
+                            pellet_r = PELLET_DIAMETER_MM / 2.0
+                            best = 0
+                            for idx, diam in enumerate(RING_DIAMETERS_MM):
+                                if dist_mm - pellet_r <= diam / 2.0:
+                                    best = max(best, idx + 1)
+                            hit_score = best
+                            hit_dist = dist_mm
+                            is_inner_ten = (
+                                hit_score == 10
+                                and (dist_mm + pellet_r) <= (INNER_TEN_DIAMETER_MM / 2.0)
+                            )
+                        elif bull_geom is not None and ring_scale_axes is not None:
+                            # Fallback: score against the ring-1-scaled ellipse frame.
+                            bcx, bcy, ba, bb, bang = bull_geom
+                            Pa_px, Pb_px = ring_scale_axes
+                            theta = math.radians(bang)
+                            cos_t, sin_t = math.cos(theta), math.sin(theta)
+                            dx = raw_x - bcx
+                            dy = raw_y - bcy
+                            rx = dx * cos_t + dy * sin_t
+                            ry = -dx * sin_t + dy * cos_t
+                            outer_mm = RING_DIAMETERS_MM[0] / 2.0
+                            nd = math.hypot(rx / Pa_px, ry / Pb_px)  # 1.0 == ring 1 edge
+                            dist_mm = nd * outer_mm
+                            pellet_r = PELLET_DIAMETER_MM / 2.0
+                            best = 0
+                            for idx, diam in enumerate(RING_DIAMETERS_MM):
+                                if dist_mm - pellet_r <= diam / 2.0:
+                                    best = max(best, idx + 1)
+                            hit_score = best
+                            hit_dist = dist_mm
+                            x_mm_centered = (rx / max(Pa_px, 1e-6)) * outer_mm
+                            y_mm_centered = (ry / max(Pb_px, 1e-6)) * outer_mm
+                            is_inner_ten = (
+                                hit_score == 10
+                                and (dist_mm + pellet_r) <= (INNER_TEN_DIAMETER_MM / 2.0)
+                            )
 
                     # Decide what to do with this detection.
                     # The "paper area" is roughly a square of side TARGET_PAPER_MM
@@ -1083,6 +1169,9 @@ def main():
                     # area. A noise blob far outside isn't a shot at all.
                     ring1_radius_mm = RING_DIAMETERS_MM[0] / 2.0
                     paper_half_mm = TARGET_PAPER_MM / 2.0
+                    if radial_scorer is not None:
+                        ring1_radius_mm = radial_scorer.max_radius_mm
+                        paper_half_mm = TARGET_PAPER_V2_MM / 2.0
                     on_paper = (
                         abs(x_mm_centered) <= paper_half_mm
                         and abs(y_mm_centered) <= paper_half_mm
@@ -1090,6 +1179,7 @@ def main():
                     # Within ~3mm past ring 1 we still consider it a real but
                     # missed shot (score 0). Beyond paper bounds it's noise.
                     is_real_shot = on_paper and hit_dist <= (paper_half_mm + 3.0)
+
 
                     if not is_real_shot:
                         _log_reject(

@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "author": "Digital Target",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "wokwi-arduino-uno", "id": "uno", "top": 0, "left": 0, "attrs": {} },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn1",
+      "top": -128.2,
+      "left": 288,
+      "attrs": { "color": "red", "label": "RECOIL" }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "laser",
+      "top": -50,
+      "left": 350,
+      "attrs": { "color": "red", "label": "LASER" }
+    },
+    { "type": "wokwi-resistor", "id": "r1", "top": 0, "left": 300, "attrs": { "value": "220" } }
+  ],
+  "connections": [
+    [ "uno:GND.1", "btn1:1.l", "black", [ "v0" ] ],
+    [ "uno:2", "btn1:2.l", "green", [ "v0" ] ],
+    [ "uno:9", "r1:1", "yellow", [ "v0" ] ],
+    [ "r1:2", "laser:A", "yellow", [ "v0" ] ],
+    [ "laser:C", "uno:GND.2", "black", [ "v0" ] ]
+  ],
+  "dependencies": {}
+}

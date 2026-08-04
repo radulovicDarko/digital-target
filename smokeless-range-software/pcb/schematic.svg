@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 700" font-family="monospace" font-size="13">
+  <style>
+    .wire { stroke: #000; stroke-width: 2; fill: none; }
+    .pwr  { stroke: #c00; stroke-width: 2.5; fill: none; }
+    .gnd  { stroke: #060; stroke-width: 2.5; fill: none; }
+    .pin  { fill: #fff; stroke: #000; stroke-width: 1.5; }
+    .chip { fill: #f5f5dc; stroke: #000; stroke-width: 2; }
+    .lbl  { fill: #000; }
+    .net  { fill: #c00; font-weight: bold; }
+    .gnd-lbl { fill: #060; font-weight: bold; }
+    .note { fill: #444; font-style: italic; font-size: 11px; }
+    .title { font-size: 16px; font-weight: bold; }
+  </style>
+
+  <text x="500" y="25" text-anchor="middle" class="title">Dry-Fire Laser — ATtiny85 — Schematic for EasyEDA</text>
+  <text x="500" y="45" text-anchor="middle" class="note">Battery + protection = PLACEHOLDER (PCB house will add). PCB shape = 35mm round.</text>
+
+  <!-- ===== BATTERY PLACEHOLDER ===== -->
+  <rect x="40" y="120" width="200" height="140" rx="6" fill="#fff8dc" stroke="#888" stroke-dasharray="6 4" stroke-width="2"/>
+  <text x="140" y="145" text-anchor="middle" font-weight="bold">BATTERY + CHARGER</text>
+  <text x="140" y="162" text-anchor="middle" class="note">PLACEHOLDER (2-pin header)</text>
+  <text x="140" y="178" text-anchor="middle" class="note">PCB designer adds:</text>
+  <text x="140" y="192" text-anchor="middle" class="note">- 18650 holder</text>
+  <text x="140" y="206" text-anchor="middle" class="note">- TP4056 Type-C charger</text>
+  <text x="140" y="220" text-anchor="middle" class="note">- 18650 protection</text>
+
+  <!-- output pads -->
+  <circle cx="240" cy="180" r="5" class="pin"/>
+  <text x="252" y="184" class="net">BAT+ (3.7-4.2V)</text>
+  <circle cx="240" cy="220" r="5" class="pin"/>
+  <text x="252" y="224" class="gnd-lbl">GND</text>
+
+  <!-- ===== SLIDE SWITCH SS12D10 ===== -->
+  <rect x="370" y="150" width="140" height="80" class="chip"/>
+  <text x="440" y="175" text-anchor="middle" font-weight="bold">S1 — SS12D10</text>
+  <text x="440" y="192" text-anchor="middle" class="note">slide switch ON/OFF</text>
+
+  <!-- 3 pins: 1 (NC) left, 2 (COMMON) middle, 3 (output) right -->
+  <circle cx="385" cy="230" r="5" class="pin"/>
+  <text x="385" y="250" text-anchor="middle" font-size="11">1 NC</text>
+
+  <circle cx="440" cy="230" r="5" class="pin"/>
+  <text x="440" y="250" text-anchor="middle" font-size="11">2 COM</text>
+
+  <circle cx="495" cy="230" r="5" class="pin"/>
+  <text x="495" y="250" text-anchor="middle" font-size="11">3 OUT</text>
+
+  <!-- wire BAT+ to switch pin 2 (common) -->
+  <path class="pwr" d="M 240 180 L 320 180 L 320 200 L 440 200 L 440 225"/>
+  <text x="270" y="170" class="net">BAT+</text>
+
+  <!-- pin 3 (OUT) becomes VCC -->
+  <path class="pwr" d="M 495 225 L 495 110 L 700 110"/>
+  <text x="560" y="100" class="net">VCC (switched)</text>
+
+  <!-- ===== ATtiny85 ===== -->
+  <rect x="620" y="320" width="200" height="220" class="chip"/>
+  <text x="720" y="345" text-anchor="middle" font-weight="bold">U1 — ATtiny85</text>
+  <text x="720" y="362" text-anchor="middle" class="note">DIP-8 (with socket)</text>
+
+  <!-- Left pins (1-4) -->
+  <circle cx="620" cy="385" r="5" class="pin"/>
+  <text x="630" y="389" font-size="11">1  PB5/RST</text>
+
+  <circle cx="620" cy="420" r="5" class="pin"/>
+  <text x="630" y="424" font-size="11">2  PB3</text>
+
+  <circle cx="620" cy="455" r="5" class="pin"/>
+  <text x="630" y="459" font-size="11">3  PB4</text>
+
+  <circle cx="620" cy="490" r="5" class="pin"/>
+  <text x="630" y="494" font-size="11">4  GND</text>
+
+  <!-- Right pins (5-8) -->
+  <circle cx="820" cy="490" r="5" class="pin"/>
+  <text x="810" y="494" text-anchor="end" font-size="11">PB0  5</text>
+
+  <circle cx="820" cy="455" r="5" class="pin"/>
+  <text x="810" y="459" text-anchor="end" font-size="11">PB1  6</text>
+
+  <circle cx="820" cy="420" r="5" class="pin"/>
+  <text x="810" y="424" text-anchor="end" font-size="11">PB2  7</text>
+
+  <circle cx="820" cy="385" r="5" class="pin"/>
+  <text x="810" y="389" text-anchor="end" font-size="11">VCC  8</text>
+
+  <!-- VCC wire to pin 8 -->
+  <path class="pwr" d="M 700 110 L 870 110 L 870 385 L 820 385"/>
+
+  <!-- 100nF decoupling capacitor between VCC and GND -->
+  <line x1="900" y1="385" x2="900" y2="430" class="wire"/>
+  <line x1="885" y1="430" x2="915" y2="430" class="wire" stroke-width="3"/>
+  <line x1="885" y1="440" x2="915" y2="440" class="wire" stroke-width="3"/>
+  <line x1="900" y1="440" x2="900" y2="490" class="wire"/>
+  <line x1="870" y1="385" x2="900" y2="385" class="wire"/>
+  <text x="922" y="438" font-size="11">C1 100nF</text>
+  <text x="922" y="452" class="note">decoupling</text>
+
+  <!-- pin 8 to C1 -->
+  <!-- GND wire from pin 4 -->
+  <path class="gnd" d="M 620 490 L 560 490 L 560 590 L 900 590 L 900 490"/>
+  <text x="700" y="608" class="gnd-lbl">GND rail</text>
+
+  <!-- GND from battery joins -->
+  <path class="gnd" d="M 240 220 L 280 220 L 280 590 L 560 590"/>
+
+  <!-- ===== LASER CONNECTOR (PB1, pin 6) ===== -->
+  <rect x="620" y="180" width="120" height="60" fill="#ffe0e0" stroke="#c00" stroke-width="2"/>
+  <text x="680" y="200" text-anchor="middle" font-weight="bold" font-size="12">J1 — LASER</text>
+  <text x="680" y="215" text-anchor="middle" class="note">2-pin header</text>
+
+  <circle cx="640" cy="240" r="5" class="pin"/>
+  <text x="640" y="258" text-anchor="middle" font-size="10">L+</text>
+
+  <circle cx="720" cy="240" r="5" class="pin"/>
+  <text x="720" y="258" text-anchor="middle" font-size="10">L−</text>
+
+  <!-- PB1 (pin 6) to LASER+ -->
+  <path class="wire" d="M 820 455 L 880 455 L 880 270 L 640 270 L 640 245"/>
+  <text x="780" y="285" font-size="11">PB1 → LASER+</text>
+
+  <!-- LASER- to GND -->
+  <path class="gnd" d="M 720 245 L 720 305 L 580 305 L 580 590"/>
+
+  <!-- ===== TRIGGER CONNECTOR (PB0, pin 5) ===== -->
+  <rect x="380" y="380" width="120" height="60" fill="#e0e0ff" stroke="#00c" stroke-width="2"/>
+  <text x="440" y="400" text-anchor="middle" font-weight="bold" font-size="12">J2 — TRIGGER</text>
+  <text x="440" y="415" text-anchor="middle" class="note">SW-18010P sensor</text>
+
+  <circle cx="400" cy="440" r="5" class="pin"/>
+  <text x="400" y="458" text-anchor="middle" font-size="10">T1</text>
+
+  <circle cx="480" cy="440" r="5" class="pin"/>
+  <text x="480" y="458" text-anchor="middle" font-size="10">T2</text>
+
+  <!-- PB0 (pin 5) to TRIG1 -->
+  <path class="wire" d="M 820 490 L 540 490 L 540 470 L 400 470 L 400 445"/>
+  <text x="540" y="465" font-size="11">PB0 (INPUT_PULLUP)</text>
+
+  <!-- TRIG2 to GND -->
+  <path class="gnd" d="M 480 445 L 480 510 L 560 510"/>
+
+  <!-- ===== ISP HEADER (optional, for reflashing) ===== -->
+  <rect x="40" y="380" width="180" height="120" fill="#e0ffe0" stroke="#060" stroke-width="2" stroke-dasharray="4 4"/>
+  <text x="130" y="400" text-anchor="middle" font-weight="bold" font-size="12">J3 — ISP HEADER</text>
+  <text x="130" y="415" text-anchor="middle" class="note">OPTIONAL — for reflashing</text>
+  <text x="130" y="428" text-anchor="middle" class="note">6-pin (2×3) or 6-pin header</text>
+
+  <text x="60"  y="455" font-size="10">VCC</text>
+  <text x="60"  y="470" font-size="10">GND</text>
+  <text x="60"  y="485" font-size="10">RST → pin 1</text>
+  <text x="140" y="455" font-size="10">MISO → pin 6 (PB1)</text>
+  <text x="140" y="470" font-size="10">MOSI → pin 5 (PB0)</text>
+  <text x="140" y="485" font-size="10">SCK  → pin 7 (PB2)</text>
+
+  <!-- ===== LEGEND ===== -->
+  <rect x="40" y="540" width="540" height="130" fill="#fafafa" stroke="#888"/>
+  <text x="50" y="560" font-weight="bold">NETLIST (connect these in EasyEDA):</text>
+  <text x="50" y="580" font-size="11">  VCC:  BAT+ → S1.2 → S1.3 → U1.8 → C1.+ → J3.VCC</text>
+  <text x="50" y="595" font-size="11">  GND:  BAT− → U1.4 → C1.− → J1.L− → J2.T2 → J3.GND</text>
+  <text x="50" y="610" font-size="11">  LASER: U1.6 (PB1) → J1.L+</text>
+  <text x="50" y="625" font-size="11">  TRIG:  U1.5 (PB0) → J2.T1</text>
+  <text x="50" y="640" font-size="11">  RST:   U1.1 → J3.RST (only if ISP header used)</text>
+  <text x="50" y="655" font-size="11">  C1 (100nF) placed close to U1 pins 8 and 4.</text>
+
+</svg>
