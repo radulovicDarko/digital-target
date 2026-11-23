@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { memo, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { StyleSheet, View } from 'react-native';
 
 import { Card, Text, ZoomablePreview } from '@/components';
@@ -28,6 +29,7 @@ const LivePreviewImpl = ({
   pollMs = 100,
   accessibilityLabel,
 }: Props) => {
+  const { t } = useTranslation();
   const theme = useTheme();
   const [tick, setTick] = useState(() => Date.now());
   const [error, setError] = useState<string | null>(null);
@@ -77,7 +79,7 @@ const LivePreviewImpl = ({
       <View style={[styles.zoomHint, { backgroundColor: theme.colors.surfaceAlt }]}>
         <Ionicons name="resize" size={14} color={theme.colors.textMuted} />
         <Text variant="caption" color="textMuted">
-          {' '}Pinch to zoom · drag to pan · double-tap or ⤓ to reset
+          {t('laserCalibration.zoomHelp')}
         </Text>
       </View>
     </Card>

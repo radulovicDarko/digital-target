@@ -385,7 +385,7 @@ export const LiveSessionScreen = ({
     const finishedSessionId = sessionId;
     finishedSessionIdRef.current = finishedSessionId;
     void (async () => {
-      await saveSession({
+      const saved = await saveSession({
         id: finishedSessionId,
         discipline,
         startedAt,
@@ -396,6 +396,7 @@ export const LiveSessionScreen = ({
         targetsPerSession,
         hits: archivedHits,
       });
+      if (saved.kind !== 'guestSkipped' && !saved.ok) return;
       // Refresh dashboard stats + history list immediately so the just-
       // finished session shows up without waiting for the next focus
       // refetch (which can be 30+s away if the user lingers on summary).
@@ -440,7 +441,7 @@ export const LiveSessionScreen = ({
         style: 'destructive',
         onPress: async () => {
           if (sessionId && startedAt) {
-            await saveSession({
+            const saved = await saveSession({
               id: sessionId,
               discipline,
               startedAt,
@@ -451,6 +452,7 @@ export const LiveSessionScreen = ({
               targetsPerSession,
               hits: archivedHits,
             });
+            if (saved.kind !== 'guestSkipped' && !saved.ok) return;
           }
           void queryClient.invalidateQueries({ queryKey: ['sessions'] });
           end();

@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+import math
 from typing import Optional, Tuple
 
 import numpy as np
@@ -22,7 +23,37 @@ import cv2
 
 
 class PiCamStream:
-    def __init__(self, width: int = 960, height: int = 540, fps: int = 60) -> None:
+    def __init__(
+        self, width: int = 960, height: int = 540, fps: int = 60, *,
+        auto_exposure: bool = False, exposure_us: int = 8000,
+        analogue_gain: float = 1.0, auto_white_balance: bool = False,
+        colour_gains: Tuple[float, float] = (1.5, 1.5),
+        af_mode: str | None = None, lens_reset_delta: float = 0.05,
+    ) -> None:
+        if (
+            min(width, height, fps, exposure_us, analogue_gain, *colour_gains) <= 0
+            or not all(math.isfinite(v) for v in (exposure_us, analogue_gain, *colour_gains))
+            or exposure_us > 1_000_000 / fps
+        ):
+            raise ValueError("Camera size/gains must be positive and exposure must fit a frame interval")
+        if type(auto_exposure) is not bool or type(auto_white_balance) is not bool:
+            raise ValueError("Camera AE/AWB settings must be booleans")
+        if not math.isfinite(lens_reset_delta) or lens_reset_delta <= 0:
+            raise ValueError("Camera lens reset tolerance must be finite and positive")
+        self._lens_reset_delta = lens_reset_delta
+        self.requested_controls = {
+            "AeEnable": auto_exposure, "AwbEnable": auto_white_balance,
+            "ExposureTime": exposure_us, "AnalogueGain": analogue_gain,
+            "ColourGains": colour_gains,
+        }
+        self._detection_controls = dict(self.requested_controls)
+        self.metadata: dict[str, object] = {}
+        self.geometry_changed = False
+        self.controls_settled = True
+        self._settled_samples = 0
+        self.control_error: str | None = None
+        self._controls_deadline = 0.0
+        self._lens_position: float | None = None
         # Local import — picamera2 is Linux/Pi-only and must not block the
         # module from being importable on macOS for tests.
         try:
@@ -51,7 +82,10 @@ class PiCamStream:
         # ---- Autofocus tuning (best-effort) ----
         self._af_supported = False
         self._af_trigger_value = None
-        self._af_mode: str = (os.environ.get("SHOOTERRANGE_PICAM_AF_MODE", "auto") or "auto").lower()
+        self._af_mode = af_mode if af_mode is not None else (os.environ.get("SHOOTERRANGE_PICAM_AF_MODE", "auto") or "auto").lower()
+        if self._af_mode not in ("once", "auto", "continuous", "0", "off", "false", "none"):
+            raise ValueError("Unsupported camera autofocus mode")
+        self._configured_af_mode = self._af_mode
         self._frame_idx = 0
         self._last_af_trigger_ts = 0.0
         try:
@@ -133,7 +167,7 @@ class PiCamStream:
         if not self._af_supported or self._cam is None:
             return
         # In continuous AF mode, do not spam AfTrigger (libcamera often warns).
-        if self._af_mode == "continuous":
+        if self._af_mode in ("continuous", "once", "0", "off", "false", "none"):
             return
         self._frame_idx += 1
         if self._frame_idx % self._blur_check_every != 0:
@@ -163,23 +197,107 @@ class PiCamStream:
         except Exception:
             return
 
+    def set_calibration_mode(self, mode: str) -> None:
+        if mode not in ("alignment", "detection"):
+            raise ValueError("Camera mode must be alignment or detection")
+        if self._cam is None:
+            raise RuntimeError("Camera is not open")
+        alignment = mode == "alignment"
+        controls = {"AeEnable": True, "AwbEnable": True} if alignment else {
+            **self._detection_controls, "AeEnable": False, "AwbEnable": False,
+        }
+        if not alignment:
+            gains = self.metadata.get("ColourGains")
+            if not isinstance(gains, (tuple, list)) or len(gains) != 2 or not all(
+                isinstance(value, (int, float)) and math.isfinite(value) and value > 0
+                for value in gains
+            ):
+                raise RuntimeError("Camera white balance is not available yet")
+            controls["ColourGains"] = tuple(float(value) for value in gains)
+        camera_controls = self._cam.camera_controls  # type: ignore[attr-defined]
+        focus_enabled = (
+            "AfMode" in camera_controls
+            and self._configured_af_mode not in ("0", "off", "false", "none")
+        )
+        if focus_enabled:
+            controls["AfMode"] = 2 if alignment else 0
+            if not alignment:
+                lens = self.metadata.get("LensPosition")
+                if not isinstance(lens, (int, float)) or not math.isfinite(lens) or lens < 0:
+                    raise RuntimeError("Camera focus position is not available yet")
+                controls["LensPosition"] = float(lens)
+        missing = set(controls) - set(camera_controls)
+        if missing:
+            raise RuntimeError(f"Camera does not support requested controls: {sorted(missing)}")
+        if not alignment:
+            for key in ("ExposureTime", "AnalogueGain"):
+                limits = camera_controls[key]
+                value = controls[key]
+                if not isinstance(value, (int, float)):
+                    raise ValueError(f"Camera {key} must be numeric")
+                if isinstance(limits, (tuple, list)) and len(limits) >= 2 and all(
+                    isinstance(bound, (int, float)) and math.isfinite(bound) for bound in limits[:2]
+                ):
+                    value = min(max(value, limits[0]), limits[1])
+                    controls[key] = int(value) if key == "ExposureTime" else float(value)
+        self._cam.set_controls(controls)  # type: ignore[attr-defined]
+        self.requested_controls = controls
+        self._af_mode = "continuous" if alignment and focus_enabled else "off"
+        self.controls_settled = alignment
+        self._settled_samples = 0
+        self.control_error = None
+        self._controls_deadline = time.monotonic() + 5.0
+
+    def _controls_match_metadata(self) -> bool:
+        checks = []
+        # Minimum analogue gain is quantized (nominal 1.0 can measure about 1.12).
+        for key, minimum_tolerance in (("ExposureTime", 100.0), ("AnalogueGain", 0.15)):
+            expected = self.requested_controls.get(key)
+            if not isinstance(expected, (int, float)):
+                return False
+            checks.append((self.metadata.get(key), expected, max(minimum_tolerance, expected * 0.05)))
+        measured_gains = self.metadata.get("ColourGains")
+        expected_gains = self.requested_controls.get("ColourGains")
+        if not isinstance(measured_gains, (tuple, list)) or len(measured_gains) != 2:
+            return False
+        if not isinstance(expected_gains, (tuple, list)) or len(expected_gains) != 2:
+            return False
+        for measured, expected in zip(measured_gains, expected_gains):
+            if not isinstance(expected, (int, float)):
+                return False
+            checks.append((measured, expected, max(0.05, expected * 0.05)))
+        if "LensPosition" in self.requested_controls:
+            checks.append((self.metadata.get("LensPosition"), self.requested_controls["LensPosition"], self._lens_reset_delta))
+        return all(
+            isinstance(measured, (int, float)) and isinstance(expected, (int, float))
+            and math.isfinite(measured) and math.isfinite(expected)
+            and abs(measured - expected) <= tolerance
+            for measured, expected, tolerance in checks
+        )
+
     def open(self) -> bool:
+        cam = None
         try:
             cam = self._Picamera2()
             cfg = cam.create_video_configuration(
-                # libcamera delivers RGB888 in *RGB* byte order; the rest of
-                # this codebase (HSV thresholds, OpenCV draws) assumes BGR,
-                # so we capture as BGR888 to skip a per-frame swap.
-                main={"size": (self.width, self.height), "format": "BGR888"},
+                # Picamera2 RGB888 is [B,G,R] in numpy (little-endian libcamera naming).
+                main={"size": (self.width, self.height), "format": "RGB888"},
                 controls={"FrameRate": float(self.fps)},
             )
             cam.configure(cfg)
+            missing = set(self.requested_controls) - set(cam.camera_controls)
+            if missing:
+                raise RuntimeError(f"Camera does not support requested controls: {sorted(missing)}")
+            cam.set_controls(self.requested_controls)
             cam.start()
             self._try_enable_autofocus(cam)
             self._cam = cam
+            print(f"[picam_stream] requested exposure/WB: {self.requested_controls}")
             return True
         except Exception as e:  # noqa: BLE001
             print(f"[picam_stream] open failed: {e}")
+            if cam is not None:
+                cam.close()
             self._cam = None
             return False
 
@@ -187,7 +305,32 @@ class PiCamStream:
         if self._cam is None:
             return False, None
         try:
-            frame = self._cam.capture_array("main")  # type: ignore[attr-defined]
+            request = self._cam.capture_request()  # type: ignore[attr-defined]
+            try:
+                frame = request.make_array("main").copy()
+                metadata = request.get_metadata()
+                self.metadata = {
+                    key: metadata[key] for key in (
+                        "ExposureTime", "AnalogueGain", "ColourGains", "LensPosition",
+                    ) if key in metadata
+                }
+                lens = metadata.get("LensPosition")
+                self.geometry_changed = (
+                    isinstance(lens, (int, float)) and self._lens_position is not None
+                    and abs(float(lens) - self._lens_position) > self._lens_reset_delta
+                )
+                if isinstance(lens, (int, float)):
+                    self._lens_position = float(lens)
+                if not self.controls_settled:
+                    self._settled_samples = self._settled_samples + 1 if self._controls_match_metadata() else 0
+                    self.controls_settled = self._settled_samples >= 3
+                    if self.controls_settled:
+                        self.control_error = None
+                    elif time.monotonic() > self._controls_deadline and self.control_error is None:
+                        self.control_error = "Camera controls did not settle; return to positioning and retry locking"
+                        print(f"[picam_stream] {self.control_error}")
+            finally:
+                request.release()
         except Exception as e:  # noqa: BLE001
             print(f"[picam_stream] read failed: {e}")
             return False, None

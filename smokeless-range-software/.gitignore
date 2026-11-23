@@ -3,6 +3,10 @@
 # Python
 __pycache__/
 *.py[cod]
+fixed_calibration.json
+detector_calibration.json
+detector_calibration.tmp
+.deploy-*
 
 # macOS
 .DS_Store

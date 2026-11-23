@@ -13,6 +13,7 @@
 #   REMOTE_DIR(default: ~/smokeless-range-software)
 #   NO_SERVICE=1                     skip installing the systemd service
 #   NO_DEPS=1                        skip pip install of requirements
+#   SERVICE_NAME                     existing systemd unit (default: shooterrange)
 #
 # What it does:
 #   1) resolves the target host (arg > auto-discovery)
@@ -24,7 +25,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI_USER="${PI_USER:-pi}"
 REMOTE_DIR="${REMOTE_DIR:-\$HOME/smokeless-range-software}"
-SERVICE_NAME="shooterrange"
+SERVICE_NAME="${SERVICE_NAME:-shooterrange}"
 
 # ---- 1. Resolve target -----------------------------------------------------
 TARGET="${1:-}"
@@ -49,11 +50,16 @@ echo "==> Remote dir: ${REMOTE_DIR}"
 
 # ---- 2. Sync code ----------------------------------------------------------
 echo "==> Syncing code with rsync..."
-rsync -az --delete \
+rsync -az \
   --exclude '.venv' \
   --exclude 'venv' \
   --exclude '__pycache__' \
   --exclude '*.pyc' \
+  --exclude 'fixed_calibration.json' \
+  --exclude 'calibration_tweaks.json' \
+  --exclude 'detector_calibration.json' \
+  --exclude 'detector_calibration.tmp' \
+  --exclude '.deploy-*' \
   --exclude 'wokwi/build*' \
   --exclude '3d/exports' \
   --exclude '.git' \

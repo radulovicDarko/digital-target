@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { Alert } from 'react-native';
+import { useTranslation } from 'react-i18next';
 
 import { AuthFlow } from '@/features/auth';
 import { CalibrationScreen } from '@/features/calibration';
@@ -45,6 +47,7 @@ const navTheme = (scheme: 'light' | 'dark') => {
 };
 
 export const RootNavigator = () => {
+  const { t } = useTranslation();
   const theme = useTheme();
   const user = useAuthStore((s) => s.user);
   const guest = useAuthStore((s) => s.guest);
@@ -262,9 +265,12 @@ export const RootNavigator = () => {
           <>
             <Stack.Screen name="Tabs">
               {({ navigation }) => (
-                attached ? (
                   <TabsNavigator
                     onStartSession={() => {
+                      if (!attached) {
+                        Alert.alert(t('common.offline'), t('errors.network'));
+                        return;
+                      }
                       if (__DEV__) {
                         // eslint-disable-next-line no-console
                         console.log('[nav] onStartSession');
@@ -300,9 +306,6 @@ export const RootNavigator = () => {
                       navigation.navigate('SessionDetail', { sessionId });
                     }}
                   />
-                ) : (
-                  <AttachGate onManage={() => navigation.navigate('Pairing')} />
-                )
               )}
             </Stack.Screen>
             <Stack.Screen

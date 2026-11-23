@@ -114,7 +114,58 @@ MAX_AREA = 5000
 #  - 300 ms = max ~3 hits/s (very conservative, original default)
 #  - 120 ms = max ~8 hits/s, comfortable for fast trigger work
 #  - 80 ms  = max ~12 hits/s (close to the human limit)
-SHOT_COOLDOWN_MS = 120
+SHOT_COOLDOWN_MS = 120  # Legacy setting; temporal detection uses DETECTOR_COOLDOWN_FRAMES.
+
+# Temporal detector thresholds are in source pixels / 8-bit brightness units.
+DETECTOR_ROI = None  # (x, y, width, height); None derives the paper ROI from calibration.
+DETECTOR_MIN_AREA = 8
+DETECTOR_MAX_AREA = 2500
+DETECTOR_MIN_CIRCULARITY = 0.35
+DETECTOR_MIN_DIFF = 20
+DETECTOR_BACKGROUND_ALPHA = 0.005
+DETECTOR_CONFIRMATION_FRAMES = 2
+DETECTOR_CONFIRMATION_RADIUS_PX = 15.0
+DETECTOR_COOLDOWN_FRAMES = 8
+DETECTOR_CLEAR_FRAMES = 2
+DETECTOR_WARMUP_FRAMES = 5
+DETECTOR_INSTABILITY_FRACTION = 0.30
+DETECTOR_BLUR_SIZE = 5
+DETECTOR_MORPH_KERNEL_SIZE = 3
+DETECTOR_OPENING_ITERATIONS = 1
+DETECTOR_CLOSING_ITERATIONS = 2
+DETECTOR_RED_VALIDATION_ENABLED = True
+DETECTOR_RED_MARGIN = 30
+DETECTOR_SATURATION_LEVEL = 235
+DETECTOR_GAUSSIAN_REFINEMENT_ENABLED = True
+DETECTOR_GAUSSIAN_MAX_ERROR = 0.35  # RMS error in log-intensity.
+DETECTOR_GAUSSIAN_MAX_SHIFT_PX = 5.0
+DETECTOR_DEBUG = _env_flag("SHOOTERRANGE_DETECTOR_DEBUG", False)
+
+# Picamera2 units: microseconds, analogue gain, (red gain, blue gain).
+# Tune on an empty target; avoid clipping highlights and keep exposure below a frame interval.
+for _camera_flag in ("SHOOTERRANGE_CAMERA_AE", "SHOOTERRANGE_CAMERA_AWB"):
+    if _camera_flag in _os.environ and _os.environ[_camera_flag].strip().lower() not in (
+        "1", "true", "yes", "on", "0", "false", "no", "off",
+    ):
+        raise ValueError(f"Invalid camera boolean setting: {_camera_flag}")
+CAMERA_AUTO_EXPOSURE_ENABLED = _env_flag("SHOOTERRANGE_CAMERA_AE", False)
+CAMERA_EXPOSURE_US = int(_os.environ.get("SHOOTERRANGE_CAMERA_EXPOSURE_US", "8000"))
+CAMERA_ANALOGUE_GAIN = 1.0
+CAMERA_AUTO_WHITE_BALANCE_ENABLED = _env_flag("SHOOTERRANGE_CAMERA_AWB", False)
+CAMERA_COLOUR_GAINS = (1.5, 1.5)
+PICAM_AF_MODE = _os.environ.get("SHOOTERRANGE_PICAM_AF_MODE", "once").lower()
+CAMERA_LENS_RESET_DELTA = 0.05  # Dioptres; refocusing invalidates the temporal background.
+
+# Optional image -> target-mm calibration; fixed-center remains the default.
+ARUCO_DICTIONARY = "DICT_4X4_50"
+ARUCO_REFERENCE_POINTS_MM = {}  # marker ID -> (x_mm, y_mm), in shooter-oriented coordinates.
+HOMOGRAPHY_REFERENCE_POINTS_MM = ((0.0, 0.0), (90.0, 0.0), (90.0, 90.0), (0.0, 90.0))
+HOMOGRAPHY_RANSAC_MM = 5.0
+HOMOGRAPHY_MAX_REPROJECTION_PX = 3.0
+HOMOGRAPHY_TARGET_WIDTH_MM = 90.0
+HOMOGRAPHY_TARGET_HEIGHT_MM = 90.0
+HOMOGRAPHY_CENTER_MM = (45.0, 45.0)
+DETECTOR_CALIBRATION_FILE = _os.path.join(_os.path.dirname(__file__), "detector_calibration.json")
 
 # Feature flag: master switch for the whole Unity UDP sender.
 # When False, no UnitySender is created, no socket is opened, and no packets are sent.

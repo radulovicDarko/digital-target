@@ -17,15 +17,6 @@ from config import (
     FFMPEG_PATH,
     RTSP_TRANSPORT,
     JPEG_SCALE,
-    LOWER_RED_1,
-    UPPER_RED_1,
-    LOWER_RED_2,
-    UPPER_RED_2,
-    LOWER_PURPLE,
-    UPPER_PURPLE,
-    MIN_AREA,
-    MAX_AREA,
-    SHOT_COOLDOWN_MS,
     UNITY_FF,
     UNITY_UDP_ENABLED,
     UNITY_HOST,
@@ -72,7 +63,8 @@ import config as _config
 
 from core.camera import create_camera_stream
 from core.utils import FPSTimer, resize_to_fit
-from core.detector import LaserDetector
+from core.detector import DetectorSettings, LaserDetector
+from core.homography import TargetCalibration
 from core.unity_sender import UnitySender
 from core.control_server import ControlState, start_control_server
 from core.calibration_tweaks import (
@@ -485,21 +477,38 @@ def main():
     print(f"Headless mode: {headless}")
 
     stream = create_camera_stream(_config)
+
+    detector = LaserDetector(DetectorSettings(
+        min_area=_config.DETECTOR_MIN_AREA, max_area=_config.DETECTOR_MAX_AREA,
+        min_circularity=_config.DETECTOR_MIN_CIRCULARITY, min_diff=_config.DETECTOR_MIN_DIFF,
+        background_alpha=_config.DETECTOR_BACKGROUND_ALPHA,
+        confirmation_frames=_config.DETECTOR_CONFIRMATION_FRAMES,
+        confirmation_radius_px=_config.DETECTOR_CONFIRMATION_RADIUS_PX,
+        cooldown_frames=_config.DETECTOR_COOLDOWN_FRAMES,
+        clear_frames=_config.DETECTOR_CLEAR_FRAMES, warmup_frames=_config.DETECTOR_WARMUP_FRAMES,
+        instability_fraction=_config.DETECTOR_INSTABILITY_FRACTION,
+        blur_size=_config.DETECTOR_BLUR_SIZE,
+        morph_kernel_size=_config.DETECTOR_MORPH_KERNEL_SIZE,
+        opening_iterations=_config.DETECTOR_OPENING_ITERATIONS,
+        closing_iterations=_config.DETECTOR_CLOSING_ITERATIONS,
+        red_validation_enabled=_config.DETECTOR_RED_VALIDATION_ENABLED,
+        red_margin=_config.DETECTOR_RED_MARGIN, saturation_level=_config.DETECTOR_SATURATION_LEVEL,
+        gaussian_refinement_enabled=_config.DETECTOR_GAUSSIAN_REFINEMENT_ENABLED,
+        gaussian_max_error=_config.DETECTOR_GAUSSIAN_MAX_ERROR,
+        gaussian_max_shift_px=_config.DETECTOR_GAUSSIAN_MAX_SHIFT_PX,
+    ))
+    detector.debug = _config.DETECTOR_DEBUG
+    target_calibration = TargetCalibration(
+        _config.DETECTOR_CALIBRATION_FILE, _config.HOMOGRAPHY_REFERENCE_POINTS_MM,
+        (_config.HOMOGRAPHY_TARGET_WIDTH_MM, _config.HOMOGRAPHY_TARGET_HEIGHT_MM),
+        _config.HOMOGRAPHY_CENTER_MM, mode=SCORING_MODE,
+        dictionary=_config.ARUCO_DICTIONARY, marker_points=_config.ARUCO_REFERENCE_POINTS_MM,
+        ransac_mm=_config.HOMOGRAPHY_RANSAC_MM,
+        max_error_px=_config.HOMOGRAPHY_MAX_REPROJECTION_PX,
+    )
     if not stream.open():
         print("Ne mogu da otvorim camera stream (picam/rtsp).")
         return
-
-    detector = LaserDetector(
-        lower_red_1=LOWER_RED_1,
-        upper_red_1=UPPER_RED_1,
-        lower_red_2=LOWER_RED_2,
-        upper_red_2=UPPER_RED_2,
-        lower_extra=LOWER_PURPLE,
-        upper_extra=UPPER_PURPLE,
-        min_area=MIN_AREA,
-        max_area=MAX_AREA,
-        shot_cooldown_ms=SHOT_COOLDOWN_MS,
-    )
 
     if UNITY_FF:
         unity_sender = UnitySender(
@@ -517,6 +526,7 @@ def main():
     shot_count = 0
     last_score = None
     last_dist = 0.0
+    last_hit_mm = None
     # Only used for drawing the last few hit markers; keep it bounded so
     # headless/systemd runs don't accumulate unbounded history.
     hit_history = deque(maxlen=30)  # (x, y)
@@ -528,6 +538,11 @@ def main():
     reject_last_ts: dict[str, float] = {}
 
     def _log_reject(reason: str, **fields) -> None:  # noqa: ANN001
+        detector.reason = reason
+        if detector.center is not None:
+            detector.rejected.append({
+                "x": detector.center[0], "y": detector.center[1], "reason": reason,
+            })
         if not headless:
             return
         if not REJECT_LOG_ENABLED:
@@ -550,6 +565,7 @@ def main():
     # and persist across runs in calibration_tweaks.json.
     auto_align = True
     align_frozen = False
+    capture_mode = "detection"
     bull_ema = None  # (cx, cy, a, b, angle)
     EMA_ALPHA = 0.25
     frozen_snapshot = None  # cached (bull_geom, Pa, Pb, rings_by_mm, tx1..ty2, tweaks)
@@ -578,9 +594,7 @@ def main():
         "center_offset_x_px": FIXED_CENTER_OFFSET_X_PX,
         "center_offset_y_px": FIXED_CENTER_OFFSET_Y_PX,
     })
-    radial_scorer = None
-    if SCORING_MODE == "fixed_center":
-        radial_scorer = RadialScorer(
+    fixed_scorer = RadialScorer(
             ring_diameters_mm=RING_DIAMETERS_V2_MM,
             inner_ten_mm=INNER_TEN_V2_MM,
             pellet_mm=PELLET_V2_MM,
@@ -591,32 +605,37 @@ def main():
             mirror_x=FIXED_MIRROR_X,
             mirror_y=FIXED_MIRROR_Y,
         )
-        print(f"[scoring] fixed_center mode: mm_per_px={fixed_cal['mm_per_px']:.5f} "
+    radial_scorer = fixed_scorer if target_calibration.mode != "legacy" else None
+    if radial_scorer is not None:
+        print(f"[scoring] {target_calibration.mode} mode: mm_per_px={fixed_cal['mm_per_px']:.5f} "
               f"offset=({fixed_cal['center_offset_x_px']:+.1f},"
               f"{fixed_cal['center_offset_y_px']:+.1f})px "
               f"mirror=({FIXED_MIRROR_X},{FIXED_MIRROR_Y})")
 
-    # Mobile control server (HTTP API + MJPEG preview).
-    control_state = None
-    if CONTROL_SERVER_ENABLED:
-        if SCORING_MODE == "fixed_center":
-            target_config = {
-                "paper_mm": float(TARGET_PAPER_V2_MM),
+    def target_configuration():
+        if target_calibration.mode != "legacy":
+            return {
+                "paper_mm": float(
+                    target_calibration.target_size[0] if target_calibration.mode == "homography" else TARGET_PAPER_V2_MM
+                ),
                 "ring_diameters_mm": list(RING_DIAMETERS_V2_MM),
                 "inner_ten_mm": float(INNER_TEN_V2_MM),
                 "pellet_mm": float(PELLET_V2_MM),
-                "discipline": "Custom 83mm (fixed-center)",
+                "discipline": f"Custom 83mm ({target_calibration.mode.replace('_', '-')})",
             }
-        else:
-            target_config = {
-                "paper_mm": float(TARGET_PAPER_MM),
-                "ring_diameters_mm": list(RING_DIAMETERS_MM),
-                "inner_ten_mm": float(INNER_TEN_DIAMETER_MM),
-                "pellet_mm": float(PELLET_DIAMETER_MM),
-                "discipline": "ISSF 10m Air Pistol",
-            }
+        return {
+            "paper_mm": float(TARGET_PAPER_MM),
+            "ring_diameters_mm": list(RING_DIAMETERS_MM),
+            "inner_ten_mm": float(INNER_TEN_DIAMETER_MM),
+            "pellet_mm": float(PELLET_DIAMETER_MM),
+            "discipline": "ISSF 10m Air Pistol",
+        }
+
+    # Mobile control server (HTTP API + MJPEG preview).
+    control_state = None
+    if CONTROL_SERVER_ENABLED:
         control_state = ControlState(
-            target_config=target_config,
+            target_config=target_configuration(),
             hit_log_enabled=SERVER_HIT_LOG_ENABLED,
             hit_log_every=SERVER_HIT_LOG_EVERY,
         )
@@ -649,6 +668,8 @@ def main():
                 }
 
             def _set_tweaks(body):
+                if align_frozen:
+                    raise ValueError("Unlock target alignment before changing calibration")
                 t = tweaks_box[0]
                 new_t = CalibrationTweaks(
                     scale_factor=float(body.get("scale_factor", t.scale_factor)),
@@ -684,9 +705,52 @@ def main():
     if not headless:
         print("Press 'q' to quit.")
 
+    def detector_status():
+        calibration_status = target_calibration.status()
+        return {
+            "available": target_calibration.frame_size is not None,
+            **calibration_status, "debug": detector.debug,
+            "error": calibration_status["error"] or getattr(stream, "control_error", None),
+            "capture_mode": capture_mode, "alignment_locked": align_frozen,
+            "preview_hits": len(hit_history),
+            "detector": detector.status(),
+            "camera": {
+                "requested": getattr(stream, "requested_controls", {}),
+                "measured": getattr(stream, "metadata", {}),
+                "controls_supported": hasattr(stream, "requested_controls"),
+            },
+        }
+
+    def set_capture_mode(mode: str, snapshot: tuple | None = None) -> None:
+        nonlocal capture_mode, align_frozen, frozen_snapshot
+        if mode == "detection":
+            if target_calibration.persistence_error:
+                raise ValueError(target_calibration.persistence_error)
+            if target_calibration.mode == "homography" and target_calibration.matrix is None:
+                raise ValueError("Calibrate four target references before locking detection")
+            if target_calibration.mode == "legacy" and snapshot is None:
+                raise ValueError("Cannot lock: target bull is not detected")
+            if capture_mode == "detection" and align_frozen:
+                return
+        setter = getattr(stream, "set_calibration_mode", None)
+        if not callable(setter):
+            raise RuntimeError("Alignment exposure controls require a Picamera2 camera")
+        setter(mode)
+        capture_mode = mode
+        align_frozen = mode == "detection"
+        frozen_snapshot = snapshot if align_frozen else None
+        detector.reset("camera_mode")
+        if not align_frozen:
+            detector.debug = False
+        if control_state is not None:
+            control_state.set_frozen(align_frozen)
+
+    pending_mode_commands = []
     try:
         while True:
+            capture_started = time.perf_counter()
             ret, frame = stream.read()
+            capture_ms = (time.perf_counter() - capture_started) * 1000
             if not ret or frame is None:
                 print("Nema frame-a ili je stream prekinut.")
                 break
@@ -698,6 +762,63 @@ def main():
             render_overlay = (not headless) or want_preview
 
             frame_h, frame_w = frame.shape[:2]
+            processing_started = time.perf_counter()
+            if target_calibration.set_frame_size(frame_w, frame_h):
+                detector.reset("frame_dimensions")
+            camera_settled = getattr(stream, "controls_settled", True)
+            if getattr(stream, "geometry_changed", False) and camera_settled:
+                detector.reset("autofocus")
+                target_calibration.invalidate("Lens position changed; recalibrate target geometry")
+            if control_state is not None:
+                pending_mode_commands = []
+                for command in control_state.consume_detector_commands():
+                    if command.action == "capture_mode" and command.payload.get("mode") == "detection":
+                        pending_mode_commands.append(command)
+                        continue
+                    try:
+                        if command.action == "reset":
+                            detector.reset("operator")
+                        elif command.action == "debug":
+                            enabled = command.payload.get("enabled")
+                            if type(enabled) is not bool:
+                                raise ValueError("debug enabled must be boolean")
+                            detector.debug = enabled
+                        elif command.action == "calibration":
+                            if align_frozen or pending_mode_commands:
+                                raise ValueError("Unlock target alignment before changing calibration")
+                            target_calibration.update(command.payload)
+                            detector.reset("calibration")
+                        elif command.action == "aruco":
+                            if align_frozen or pending_mode_commands:
+                                raise ValueError("Unlock target alignment before changing calibration")
+                            target_calibration.calibrate_markers(frame)
+                            detector.reset("marker_calibration")
+                        elif command.action == "clear_preview":
+                            hit_history.clear()
+                        elif command.action == "capture_mode":
+                            if command.payload.get("mode") != "alignment":
+                                raise ValueError("Camera mode must be alignment or detection")
+                            for pending in pending_mode_commands:
+                                pending.error = RuntimeError("Lock request superseded by a new alignment request")
+                                print(f"[detector] {pending.error}")
+                                pending.done.set()
+                            pending_mode_commands.clear()
+                            set_capture_mode("alignment")
+                        else:
+                            raise ValueError("Unknown detector command")
+                        control_state.target_config = target_configuration()
+                        command.result = detector_status()
+                    except (ValueError, RuntimeError, OSError, cv2.error) as exc:
+                        print(f"[detector] command {command.action} failed: {exc}")
+                        command.error = ValueError(str(exc)) if isinstance(exc, cv2.error) else exc
+                    finally:
+                        command.done.set()
+                control_state.update_detector_status(detector_status())
+                if want_preview:
+                    ok_raw, raw_jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, int(MJPEG_QUALITY)])
+                    if ok_raw:
+                        control_state.push_raw_frame(raw_jpg.tobytes())
+            radial_scorer = fixed_scorer if target_calibration.mode != "legacy" else None
 
             # Re-read tweaks each frame so live REST updates from the mobile
             # app take effect immediately.
@@ -727,7 +848,7 @@ def main():
                 print(f"Auto adjust: collecting {_auto_samples_target} samples...")
 
             # ---- Bull detection (the spatial prior) ----------------------
-            if not align_frozen:
+            if not align_frozen and (radial_scorer is None or _auto_samples_target > 0):
                 detected = detect_bull_ellipse(frame)
                 if detected is not None:
                     if bull_ema is None or len(bull_ema) != 5:
@@ -737,7 +858,10 @@ def main():
                             EMA_ALPHA * detected[i] + (1 - EMA_ALPHA) * bull_ema[i]
                             for i in range(5)
                         )
-            current_bull = bull_ema if (bull_ema is not None and len(bull_ema) == 5) else None
+            current_bull = bull_ema if (
+                (radial_scorer is None or _auto_samples_target > 0)
+                and bull_ema is not None and len(bull_ema) == 5
+            ) else None
 
             # Collect a sample for multi-frame Auto Adjust if we're in that
             # mode AND we just got a fresh detection. We accumulate raw bull
@@ -860,13 +984,15 @@ def main():
                 tx2 = min(frame_w, int(bcx + hx))
                 ty2 = min(frame_h, int(bcy + hy))
 
-            if CALIBRATION_ENABLED:
+            detector_started = time.perf_counter()
+            if radial_scorer is None and CALIBRATION_ENABLED:
                 # Mask the rectangular ROI down to the actual paper area.
                 # Without this, red blobs *outside* the paper get detected
                 # and turn into false hits. We use ring 1 scaled up to the
                 # paper extent so even shots that miss ring 1 but land on
                 # paper still get registered (as score 0).
-                roi = frame[ty1:ty2, tx1:tx2].copy()
+                roi = frame[ty1:ty2, tx1:tx2]
+                paper_mask = None
                 if bull_geom is not None and ring_scale_axes is not None:
                     bcx_full, bcy_full, _ba_g, _bb_g, bang_g = bull_geom
                     Pa_px, Pb_px = ring_scale_axes
@@ -880,32 +1006,51 @@ def main():
                         (paper_a, paper_b),
                         bang_g, 0, 360, 255, -1,
                     )
-                    roi[paper_mask == 0] = 0
-                detection, roi_mask = detector.detect(roi)
-                if not headless:
-                    mask = cv2.copyMakeBorder(
-                        roi_mask,
-                        ty1,
-                        frame_h - ty2,
-                        tx1,
-                        frame_w - tx2,
-                        cv2.BORDER_CONSTANT,
-                        value=0,
-                    )
+                detection_roi = target_calibration.roi or _config.DETECTOR_ROI
+                if detection_roi is None:
+                    detection_roi = (tx1, ty1, tx2 - tx1, ty2 - ty1)
                 else:
-                    mask = roi_mask
-                if detection is not None:
-                    detection["x"] += tx1
-                    detection["y"] += ty1
+                    paper_mask = None
+                detection_paper_mask = paper_mask
             else:
-                detection, mask = detector.detect(frame)
+                detection_roi = target_calibration.roi or _config.DETECTOR_ROI
+                detection_paper_mask = None
+                if target_calibration.mode == "homography" and target_calibration.matrix is not None:
+                    detection_roi, detection_paper_mask = target_calibration.detection_region(detection_roi)
+                if detection_roi is None and target_calibration.mode == "fixed_center":
+                    span = TARGET_PAPER_V2_MM / fixed_cal["mm_per_px"]
+                    cx = frame_w / 2 + fixed_cal["center_offset_x_px"]
+                    cy = frame_h / 2 + fixed_cal["center_offset_y_px"]
+                    rx1, ry1 = max(0, int(cx - span / 2)), max(0, int(cy - span / 2))
+                    rx2, ry2 = min(frame_w, int(math.ceil(cx + span / 2))), min(frame_h, int(math.ceil(cy + span / 2)))
+                    detection_roi = (rx1, ry1, rx2 - rx1, ry2 - ry1)
+            if capture_mode == "alignment" or not camera_settled:
+                detection, mask = None, np.zeros((frame_h, frame_w), dtype=np.uint8)
+                detector.state, detector.reason = (
+                    ("alignment", "position_target") if capture_mode == "alignment"
+                    else ("camera_settling", "waiting_camera_controls")
+                )
+            else:
+                detection, mask = detector.detect(frame, detection_roi, detection_paper_mask)
+            if detector.scene_changed:
+                target_calibration.invalidate("Scene changed; verify geometry and recalibrate homography")
+            detector_ms = (time.perf_counter() - detector_started) * 1000
+            if control_state is not None:
+                control_state.update_detector_status({
+                    **detector_status(),
+                    "processing_ms": (time.perf_counter() - processing_started) * 1000,
+                    "effective_roi": list(detection_roi) if detection_roi is not None else [0, 0, frame_w, frame_h],
+                })
+
+            if render_overlay:
+                frame = frame.copy()
 
             # Calibration scoring homography (paper-mm space).
             # When frozen, reuse the cached homography; otherwise compute it.
             paper_homography = None
             if align_frozen and frozen_homography is not None:
                 paper_homography = frozen_homography
-            if CALIBRATION_ENABLED and bull_geom is not None and ring_scale_axes is not None:
+            if radial_scorer is None and CALIBRATION_ENABLED and bull_geom is not None and ring_scale_axes is not None:
                 if paper_homography is not None and not render_overlay:
                     # Frozen + headless/no-preview: reuse cached scoring homography.
                     pass
@@ -970,9 +1115,26 @@ def main():
                                 frame, (int(bcx), int(bcy)), color,
                                 cv2.MARKER_CROSS, 12, 1,
                             )
-            elif CALIBRATION_ENABLED and render_overlay:
+            elif radial_scorer is None and CALIBRATION_ENABLED and render_overlay:
                 cv2.rectangle(frame, (tx1, ty1), (tx2, ty2), (255, 0, 0), 2)
                 draw_target_rings(frame, tx1, ty1, tx2, ty2, color=(255, 180, 0))
+
+            if radial_scorer is not None and render_overlay:
+                if target_calibration.mode == "homography" and target_calibration.matrix is not None:
+                    to_image = np.linalg.inv(target_calibration.matrix)
+                    for diameter in RING_DIAMETERS_V2_MM:
+                        ring = project_paper_circle(
+                            to_image, *target_calibration.center, diameter / 2,
+                        )
+                        cv2.polylines(frame, [ring], True, (255, 180, 0), 1, cv2.LINE_AA)
+                elif target_calibration.mode == "fixed_center":
+                    center = (
+                        int(round(frame_w / 2 + fixed_cal["center_offset_x_px"])),
+                        int(round(frame_h / 2 + fixed_cal["center_offset_y_px"])),
+                    )
+                    for diameter in RING_DIAMETERS_V2_MM:
+                        radius = max(1, int(round(diameter / (2 * fixed_cal["mm_per_px"]))))
+                        cv2.circle(frame, center, radius, (255, 180, 0), 1, cv2.LINE_AA)
 
             if render_overlay:
                 # Draw past hits (pellet-sized circles)
@@ -981,6 +1143,29 @@ def main():
                 for hx, hy in hit_history:
                     cv2.circle(frame, (hx, hy), pellet_r_px, (0, 255, 255), 1, cv2.LINE_AA)
                     cv2.circle(frame, (hx, hy), 2, (0, 255, 255), -1, cv2.LINE_AA)
+
+            world_hit = None
+            if detection is not None and target_calibration.persistence_error is not None:
+                _log_reject("calibration_file_invalid", detail=target_calibration.persistence_error)
+                detection = None
+            if detection is not None and radial_scorer is None:
+                if not (align_frozen or not auto_align):
+                    _log_reject("not_frozen")
+                    detection = None
+                elif CALIBRATION_ENABLED and not point_inside_target(
+                    detection["x"], detection["y"], tx1, ty1, tx2, ty2,
+                ):
+                    _log_reject("outside_roi")
+                    detection = None
+            if detection is not None and target_calibration.mode == "homography":
+                try:
+                    wx, wy = target_calibration.transform(detection["x"], detection["y"])
+                    world_hit = fixed_scorer.score_mm(
+                        wx - target_calibration.center[0], wy - target_calibration.center[1],
+                    )
+                except ValueError as exc:
+                    _log_reject("homography_unavailable", detail=str(exc))
+                    detection = None
 
             if detection is not None:
                 raw_x = detection["x"]
@@ -1054,7 +1239,7 @@ def main():
                         area=area,
                         inside_roi=inside_roi if CALIBRATION_ENABLED else None,
                     )
-                    continue
+                    raise RuntimeError("Validated detector candidate could not be mapped")
 
                 # Don't register hits until calibration is confirmed (frozen with 'n').
                 # IMPORTANT: don't consume detector cooldown if we're not allowed to fire.
@@ -1067,15 +1252,7 @@ def main():
                         area=area,
                         inside_roi=inside_roi if CALIBRATION_ENABLED else None,
                     )
-                    continue
-
-                if not detector.should_emit_shot():
-                    _log_reject(
-                        "not_armed" if not getattr(detector, "armed", True) else "cooldown",
-                        raw=f"({raw_x},{raw_y})",
-                        area=area,
-                    )
-                    continue
+                    raise RuntimeError("Unconfirmed calibration reached shot registration")
 
                 # Hit candidate accepted by detector + calibration state.
                 if True:
@@ -1088,7 +1265,12 @@ def main():
                         # distance from the fixed image centre, no bull/paper/
                         # homography detection at all. The camera sits square-on
                         # behind the paper, so the geometry is a known constant.
-                        rh = radial_scorer.score(raw_x, raw_y, frame_w, frame_h)
+                        if target_calibration.mode == "homography":
+                            rh = world_hit
+                        else:
+                            rh = radial_scorer.score(raw_x, raw_y, frame_w, frame_h)
+                        if rh is None:
+                            raise RuntimeError("Validated homography candidate has no world score")
                         hit_score = rh.score
                         hit_dist = rh.dist_mm
                         hit_maxr = rh.max_radius_mm
@@ -1101,6 +1283,10 @@ def main():
                         send_ny = rh.y_norm
                         send_detection["nx"] = rh.x_norm
                         send_detection["ny"] = rh.y_norm
+                        if target_calibration.mode == "homography":
+                            send_nx = clamp01(0.5 + rh.x_mm / target_calibration.target_size[0])
+                            send_ny = clamp01(0.5 + rh.y_mm / target_calibration.target_size[1])
+                            send_detection["nx"], send_detection["ny"] = send_nx, send_ny
                         unity_ny = 1.0 - send_ny if UNITY_INVERT_Y else send_ny
                     else:
                         # Default fallback (no calibration): rectangle scoring.
@@ -1179,6 +1365,11 @@ def main():
                     # Within ~3mm past ring 1 we still consider it a real but
                     # missed shot (score 0). Beyond paper bounds it's noise.
                     is_real_shot = on_paper and hit_dist <= (paper_half_mm + 3.0)
+                    if target_calibration.mode == "homography":
+                        is_real_shot = (
+                            0 <= wx <= target_calibration.target_size[0]
+                            and 0 <= wy <= target_calibration.target_size[1]
+                        )
 
 
                     if not is_real_shot:
@@ -1189,14 +1380,15 @@ def main():
                             dist=f"{hit_dist:.1f}mm",
                             score=hit_score,
                         )
-                    else:
+                    elif detector.should_emit_shot():
                         # Hits outside ring 1 (score 0) still count: a fired
                         # shot is a fired shot, just worth zero points.
                         total_score += hit_score
                         shot_count += 1
                         last_score = hit_score
                         last_dist = hit_dist
-                        hit_history.append((raw_x, raw_y))
+                        last_hit_mm = (x_mm_centered, y_mm_centered)
+                        hit_history.append((int(round(raw_x)), int(round(raw_y))))
 
                         # Per-hit console logging can overwhelm journald on headless Pi.
                         # Default behavior is unchanged (enabled, every hit, full format).
@@ -1277,6 +1469,33 @@ def main():
             # Only compute resized display buffers when we actually need them.
             display_frame = None
             if render_overlay:
+                if detector.debug and capture_mode != "alignment" and camera_settled:
+                    dx, dy, dw, dh = detection_roi or (0, 0, frame_w, frame_h)
+                    cv2.rectangle(frame, (dx, dy), (dx + dw, dy + dh), (0, 255, 0), 1)
+                    for contour in detector.contours:
+                        shifted = contour + np.array([[[dx, dy]]], dtype=np.int32)
+                        cv2.drawContours(frame, [shifted], -1, (0, 180, 255), 1)
+                    if detector.center is not None:
+                        cv2.drawMarker(frame, tuple(int(round(v)) for v in detector.center),
+                                       (0, 255, 255), cv2.MARKER_CROSS, 12, 1)
+                    debug_text = f"{detector.state} {detector.reason} {detector.refinement}"
+                    cv2.putText(frame, debug_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
+                    metadata = getattr(stream, "metadata", {})
+                    cv2.putText(frame, f"Camera: {metadata}", (10, 80),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+                    for rejected in detector.rejected:
+                        cv2.putText(frame, str(rejected["reason"]),
+                                    (int(rejected["x"]), int(rejected["y"])),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+                    cv2.putText(frame, f"Target mm: {last_hit_mm} Score: {last_score} distance: {last_dist:.2f}mm",
+                                (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+                    panels = []
+                    for index, image in enumerate((detector.diff, detector.threshold_mask, detector.mask)):
+                        panel_w = frame_w // 3 if index < 2 else frame_w - 2 * (frame_w // 3)
+                        panels.append(cv2.cvtColor(
+                            cv2.resize(image, (panel_w, max(1, frame_h // 3))), cv2.COLOR_GRAY2BGR,
+                        ))
+                    frame = np.vstack((frame, np.hstack(panels)))
                 display_frame = resize_to_fit(frame, DISPLAY_MAX_WIDTH, DISPLAY_MAX_HEIGHT)
 
             if not headless:
@@ -1299,11 +1518,16 @@ def main():
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
                     break
+                if key == ord("c"):
+                    detector.reset("keyboard")
+                if key == ord("v"):
+                    detector.debug = not detector.debug
                 if key == ord("r"):
                     total_score = 0
                     shot_count = 0
                     last_score = None
                     last_dist = 0.0
+                    last_hit_mm = None
                     hit_history.clear()
                     print("Score reset.")
                 if key == ord("a"):
@@ -1392,12 +1616,20 @@ def main():
                     # from HTTP (no keyboard).
                     print(f"[http] freeze_request consumed -> {freeze_target}")
 
+            if freeze_target is False and callable(getattr(stream, "set_calibration_mode", None)):
+                try:
+                    set_capture_mode("alignment")
+                except (ValueError, RuntimeError, OSError) as exc:
+                    print(f"[calibration] Cannot enter alignment mode: {exc}")
             if freeze_target is not None and freeze_target != align_frozen:
                 align_frozen = freeze_target
                 if align_frozen:
                     # Snapshot the current bull-based geometry so subsequent
                     # frames keep the same calibration.
-                    if bull_geom is not None and ring_scale_axes is not None:
+                    if radial_scorer is not None:
+                        align_frozen = target_calibration.mode != "homography" or target_calibration.matrix is not None
+                        frozen_snapshot = None
+                    elif bull_geom is not None and ring_scale_axes is not None:
                         Pa_cache, Pb_cache = ring_scale_axes
                         frozen_snapshot = (
                             bull_geom,
@@ -1415,11 +1647,46 @@ def main():
                         print("Cannot freeze: bull not detected yet.")
                 else:
                     frozen_snapshot = None
+                if align_frozen and capture_mode == "alignment":
+                    try:
+                        set_capture_mode("detection", frozen_snapshot)
+                    except (ValueError, RuntimeError, OSError) as exc:
+                        align_frozen = False
+                        print(f"[calibration] Cannot lock camera: {exc}")
                 if control_state is not None:
                     control_state.set_frozen(align_frozen)
                 print(f"Align frozen: {align_frozen}")
+            if control_state is not None:
+                for command in pending_mode_commands:
+                    try:
+                        snapshot = None
+                        if radial_scorer is None and bull_geom is not None and ring_scale_axes is not None:
+                            Pa_cache, Pb_cache = ring_scale_axes
+                            snapshot = (
+                                bull_geom, Pa_cache, Pb_cache, dict(rings_by_mm),
+                                tx1, ty1, tx2, ty2, paper_homography,
+                            )
+                        set_capture_mode("detection", snapshot)
+                        command.result = detector_status()
+                    except (ValueError, RuntimeError, OSError, cv2.error) as exc:
+                        print(f"[detector] command {command.action} failed: {exc}")
+                        command.error = ValueError(str(exc)) if isinstance(exc, cv2.error) else exc
+                    finally:
+                        command.done.set()
+                control_state.update_detector_status({
+                    **detector_status(),
+                    "processing_ms": (time.perf_counter() - processing_started) * 1000,
+                    "detector_ms": detector_ms, "capture_ms": capture_ms,
+                    "effective_roi": list(detection_roi) if detection_roi else [0, 0, frame_w, frame_h],
+                })
 
     finally:
+        if control_state is not None:
+            control_state.update_detector_status({"available": False, "error": "Capture stopped"})
+            for command in [*pending_mode_commands, *control_state.consume_detector_commands()]:
+                if not command.done.is_set():
+                    command.error = RuntimeError("Capture stopped before applying command")
+                    command.done.set()
         if unity_sender is not None:
             unity_sender.close()
         stream.release()

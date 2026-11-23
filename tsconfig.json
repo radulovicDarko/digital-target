@@ -9,6 +9,7 @@
     ],
     "jsx": "react-native",
     "strict": true,
+    "types": ["jest", "node"],
     "noImplicitAny": true,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
@@ -39,7 +40,9 @@
     "app",
     "__tests__",
     "e2e",
-    "*.d.ts"
+    "*.d.ts",
+    "*.ts",
+    "*.tsx"
   ],
   "exclude": [
     "node_modules",

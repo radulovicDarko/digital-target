@@ -1,10 +1,13 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useApiClient } from '@/api/hooks';
+import { createDetectorCalibrationClient } from '@/api/client';
+import type { DetectorStatus } from '@/api/schemas';
+import { supportsDetectorWorkflow } from '@/api/schemas';
 import { DEMO_LOCAL_BASE_URL, isDemoPairing } from '@/api/demo';
 import { Button, Card, ScreenHeader, Slider, Text } from '@/components';
 import { usePairingStore } from '@/state/pairingStore';
@@ -13,6 +16,7 @@ import { securePairings } from '@/storage/securePairings';
 import { useTheme } from '@/theme';
 
 import { LivePreview } from './LivePreview';
+import { DetectorControls } from './DetectorControls';
 
 type Props = { onCompleted: () => void };
 
@@ -79,55 +83,78 @@ export const CalibrationScreen = ({ onCompleted }: Props) => {
   const [savingFreeze, setSavingFreeze] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [autoAdjusting, setAutoAdjusting] = useState(false);
+  const [showLegacy, setShowLegacy] = useState(false);
   const [frozen, setFrozen] = useState(false);
   const [tweaks, setTweaks] = useState<Tweaks>(DEFAULT_TWEAKS);
+  const [detectorStatus, setDetectorStatus] = useState<Extract<DetectorStatus, { available: true }> | null>(null);
 
   const isDemo = isDemoPairing(active);
   const previewBaseUrl = isDemo ? DEMO_LOCAL_BASE_URL : active?.baseUrl;
+  const detectorApi = useMemo(() => previewBaseUrl
+    ? createDetectorCalibrationClient(previewBaseUrl, active?.token) : null, [previewBaseUrl, active?.token]);
+  const workflowSupported = !!detectorStatus && supportsDetectorWorkflow(detectorStatus)
+    && detectorStatus.camera.controls_supported;
+  const receiveStatus = useCallback((next: Extract<DetectorStatus, { available: true }>) => {
+    setDetectorStatus(next);
+    if (next.alignment_locked !== undefined) setFrozen(next.alignment_locked);
+  }, []);
 
   // Latest-write-wins POST queue. Refs so a re-render mid-drag doesn't
   // cancel the outgoing request.
   const pendingTweaks = useRef<Tweaks | null>(null);
   const flushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const inFlight = useRef(false);
+  const inFlight = useRef<Promise<void> | null>(null);
 
-  const flushTweaks = useCallback(async () => {
+  const flushTweaks = useCallback(async (): Promise<void> => {
     if (!previewBaseUrl) return;
-    if (inFlight.current) return; // a flush will trigger again on completion
-    const next = pendingTweaks.current;
-    if (next == null) return;
-    pendingTweaks.current = null;
-    inFlight.current = true;
-    try {
-      await fetch(`${previewBaseUrl}/api/calibration/tweaks`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(next),
+    while (pendingTweaks.current || inFlight.current) {
+      if (inFlight.current) {
+        await inFlight.current;
+        continue;
+      }
+      const next = pendingTweaks.current;
+      if (!next) continue;
+      pendingTweaks.current = null;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      const request = Promise.resolve().then(async () => {
+        const response = await fetch(`${previewBaseUrl}/api/calibration/tweaks`, {
+          method: 'POST', signal: controller.signal,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(next),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
       });
-    } catch (e) {
-      void logger.warn('cal', `tweaks update failed: ${String(e)}`);
-    } finally {
-      inFlight.current = false;
-      // If another change arrived while we were flushing, send the latest.
-      if (pendingTweaks.current != null) void flushTweaks();
+      inFlight.current = request;
+      try {
+        await request;
+      } finally {
+        clearTimeout(timeout);
+        inFlight.current = null;
+      }
     }
   }, [previewBaseUrl]);
+  const reportTweaksFailure = useCallback((failure: unknown) => {
+    void logger.warn('cal', `tweaks update failed: ${String(failure)}`);
+    Alert.alert(t('common.error'), t('errors.network'));
+  }, [t]);
 
   // Apply tweak locally instantly (no flicker), debounce the network write.
   const applyTweaks = useCallback(
     (patch: Partial<Tweaks>) => {
+      if (frozen || savingFreeze || confirming) return;
       setTweaks((prev) => {
         const merged = { ...prev, ...patch };
         pendingTweaks.current = merged;
         if (flushTimer.current) clearTimeout(flushTimer.current);
         flushTimer.current = setTimeout(() => {
           flushTimer.current = null;
-          void flushTweaks();
+          void flushTweaks().catch(reportTweaksFailure);
         }, TWEAK_DEBOUNCE_MS);
         return merged;
       });
     },
-    [flushTweaks],
+    [flushTweaks, reportTweaksFailure, frozen, savingFreeze, confirming],
   );
 
   // Fetch current tweaks once on mount (or when the base url changes).
@@ -208,23 +235,25 @@ export const CalibrationScreen = ({ onCompleted }: Props) => {
     }
     if (!apiClient) throw new Error('No api client');
     const raw = (apiClient as { raw?: { post: (url: string) => Promise<unknown> } }).raw;
-    if (raw?.post) await raw.post(path);
+    if (!raw?.post) throw new Error('Pi control client is unavailable');
+    await raw.post(path);
   };
 
   const onSaveOrRecalibrate = async () => {
     setSavingFreeze(true);
     try {
-      if (frozen) {
-        await postControl('/api/calibration/unfreeze');
-        setFrozen(false);
+      await flushTweaks();
+      if (!isDemo && workflowSupported && detectorApi) {
+        const next = await detectorApi.setCaptureMode(frozen ? 'alignment' : 'detection');
+        if (!next.available) throw new Error(next.error ?? t('laserCalibration.unavailable'));
+        receiveStatus(next);
       } else {
-        await postControl('/api/calibration/freeze');
-        setFrozen(true);
-        Alert.alert(t('calibration.savedTitle'), t('calibration.savedBody'));
+        await postControl(frozen ? '/api/calibration/unfreeze' : '/api/calibration/freeze');
+        setFrozen(!frozen);
       }
     } catch (e) {
       void logger.warn('cal', `freeze toggle failed: ${String(e)}`);
-      Alert.alert(t('common.error'), t('errors.network'));
+      Alert.alert(t('common.error'), e instanceof Error ? e.message : t('errors.network'));
     } finally {
       setSavingFreeze(false);
     }
@@ -233,10 +262,17 @@ export const CalibrationScreen = ({ onCompleted }: Props) => {
   const onConfirm = async () => {
     setConfirming(true);
     try {
-      // In headless Pi setups there is no keyboard 'n' to freeze alignment.
-      // Freeze via HTTP so the detector starts emitting hits reliably once
-      // the user confirms calibration.
-      await postControl('/api/calibration/freeze');
+      if (!isDemo && workflowSupported && detectorApi) {
+        const next = await detectorApi.status();
+        if (!next.available) throw new Error(next.error ?? t('laserCalibration.unavailable'));
+        if (!next.alignment_locked || next.capture_mode !== 'detection') {
+          throw new Error(t('laserCalibration.unlockFirst'));
+        }
+        if (next.error) throw new Error(next.error);
+        if (next.detector.state !== 'ready') throw new Error(t('laserCalibration.waitReady'));
+      } else {
+        await postControl('/api/calibration/freeze');
+      }
       const updated = { ...active, calibrationConfirmedAt: Date.now() };
       await securePairings.upsert(updated);
       upsert(updated);
@@ -244,7 +280,7 @@ export const CalibrationScreen = ({ onCompleted }: Props) => {
       onCompleted();
     } catch (e) {
       void logger.warn('cal', `confirm failed: ${String(e)}`);
-      Alert.alert(t('common.error'), t('errors.network'));
+      Alert.alert(t('common.error'), e instanceof Error ? e.message : t('errors.network'));
     } finally {
       setConfirming(false);
     }
@@ -252,12 +288,12 @@ export const CalibrationScreen = ({ onCompleted }: Props) => {
 
   const onBack = () => {
     Alert.alert(
-      'Leave calibration?',
-      'Calibration is required before you can use this Range. You can resume later from Settings.',
+      t('calibration.leaveTitle'),
+      t('calibration.leaveBody'),
       [
         { text: t('common.cancel'), style: 'cancel' },
         {
-          text: 'Leave',
+          text: t('common.back'),
           style: 'destructive',
           onPress: async () => {
             // Drop the active range so the RootNavigator falls back to the
@@ -273,7 +309,7 @@ export const CalibrationScreen = ({ onCompleted }: Props) => {
 
   return (
     <SafeAreaView
-      edges={['top', 'left', 'right']}
+      edges={['top', 'left', 'right', 'bottom']}
       style={[styles.root, { backgroundColor: theme.colors.bg }]}
       testID="calibration"
     >
@@ -283,7 +319,7 @@ export const CalibrationScreen = ({ onCompleted }: Props) => {
           title={t('calibration.title')}
           subtitle={t('calibration.subtitle', { name: active.name })}
           onBack={onBack}
-          backLabel="Leave calibration"
+          backLabel={t('common.back')}
         />
 
         {previewBaseUrl ? (
@@ -296,6 +332,12 @@ export const CalibrationScreen = ({ onCompleted }: Props) => {
             />
           </View>
         ) : null}
+        <Text variant="bodyBold" style={{ marginTop: theme.spacing(2) }}>
+          {t(frozen ? 'laserCalibration.stepTest' : 'laserCalibration.stepPosition')}
+        </Text>
+        <Text variant="caption" color="textMuted">
+          {t(frozen ? 'laserCalibration.darkPreviewHelp' : 'laserCalibration.positionHelp')}
+        </Text>
       </View>
 
       {/* Scrollable controls below the fixed preview. */}
@@ -308,11 +350,24 @@ export const CalibrationScreen = ({ onCompleted }: Props) => {
         }}
         showsVerticalScrollIndicator={false}
       >
+        {previewBaseUrl ? <DetectorControls baseUrl={previewBaseUrl} token={active.token}
+          isDemo={isDemo} rangeId={active.id} prepareOnMount
+          workflowBusy={savingFreeze || confirming} onStatusChange={receiveStatus} /> : null}
+        {detectorStatus?.mapping_mode === 'legacy' ? (
+          <Button variant="ghost" onPress={() => setShowLegacy(!showLegacy)}
+            accessibilityState={{ expanded: showLegacy }}>
+            {t('laserCalibration.legacyControls')}
+          </Button>
+        ) : null}
+        {detectorStatus?.mapping_mode === 'legacy' && showLegacy ? (
+        <View pointerEvents={frozen || savingFreeze || confirming ? 'none' : 'auto'}
+          style={{ gap: theme.spacing(3), opacity: frozen ? 0.5 : 1 }}>
         <Card>
           <View style={styles.autoRow}>
             <Button
               onPress={() => void onAutoAdjust()}
               loading={autoAdjusting}
+              disabled={frozen || savingFreeze || confirming}
               variant="primary"
             >
               <View style={styles.autoBtnContent}>
@@ -322,10 +377,10 @@ export const CalibrationScreen = ({ onCompleted }: Props) => {
                 </Text>
               </View>
             </Button>
-            <Button variant="secondary" onPress={onLockHorizontal}>
+            <Button variant="secondary" onPress={onLockHorizontal} disabled={frozen || savingFreeze || confirming}>
               Lock horizontal
             </Button>
-            <Button variant="ghost" onPress={() => applyTweaks(DEFAULT_TWEAKS)}>
+            <Button variant="ghost" onPress={() => applyTweaks(DEFAULT_TWEAKS)} disabled={frozen || savingFreeze || confirming}>
               Reset all
             </Button>
           </View>
@@ -464,32 +519,30 @@ export const CalibrationScreen = ({ onCompleted }: Props) => {
           />
         </CalibrationSection>
 
-        <Card>
-          <Text variant="bodyBold">{t('calibration.checklistTitle')}</Text>
-          <ChecklistItem text={t('calibration.checklist1')} />
-          <ChecklistItem text={t('calibration.checklist2')} />
-          <ChecklistItem text={t('calibration.checklist3')} />
-        </Card>
-
-        <View style={styles.actionRow}>
+        </View>
+        ) : null}
+      </ScrollView>
+        <View style={[styles.actionRow, { padding: theme.spacing(4), borderTopWidth: 1, borderTopColor: theme.colors.border }]}>
           <Button
             onPress={() => void onSaveOrRecalibrate()}
-            variant={frozen ? 'primary' : 'secondary'}
+            variant={frozen ? 'secondary' : 'primary'}
             loading={savingFreeze}
+            disabled={confirming || autoAdjusting || (!isDemo && !detectorStatus)}
             testID="calibration-save"
           >
-            {frozen ? t('calibration.recalibrate') : t('calibration.save')}
+            {frozen ? t(workflowSupported ? 'laserCalibration.prepareTarget' : 'calibration.recalibrate')
+              : t(workflowSupported ? 'laserCalibration.lockTarget' : 'calibration.save')}
           </Button>
-          <Button
+          {frozen ? <Button
             onPress={() => void onConfirm()}
             loading={confirming}
-            disabled={!frozen}
+            disabled={!frozen || savingFreeze || (!isDemo && workflowSupported && !!detectorStatus
+              && (detectorStatus.detector.state !== 'ready' || !!detectorStatus.error))}
             testID="calibration-confirm"
           >
-            {t('calibration.confirm')}
-          </Button>
+            {t('common.next')}
+          </Button> : null}
         </View>
-      </ScrollView>
     </SafeAreaView>
   );
 };
@@ -528,16 +581,6 @@ const CalibrationSection = ({
   );
 };
 
-const ChecklistItem = ({ text }: { text: string }) => {
-  const t = useTheme();
-  return (
-    <View style={[styles.checkRow, { marginTop: t.spacing(2) }]}>
-      <Ionicons name="checkmark-circle-outline" size={18} color={t.colors.success} />
-      <Text style={{ flex: 1 }}>{text}</Text>
-    </View>
-  );
-};
-
 const styles = StyleSheet.create({
   root: { flex: 1 },
   header: {},
@@ -562,10 +605,5 @@ const styles = StyleSheet.create({
     gap: 8,
     justifyContent: 'flex-end',
     flexWrap: 'wrap',
-  },
-  checkRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
   },
 });

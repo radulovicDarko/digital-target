@@ -98,9 +98,9 @@ export const PairingDiscoveryScreen = ({
   const autoAdvancedRef = useRef(false);
   useEffect(() => {
     if (autoAdvancedRef.current) return;
-    if (services.length === 0 && candidates.length === 1) {
+    const [c] = candidates;
+    if (services.length === 0 && candidates.length === 1 && c) {
       autoAdvancedRef.current = true;
-      const c = candidates[0];
       onCandidateSelected(c.baseUrl, c.name);
     }
   }, [candidates, services.length, onCandidateSelected]);

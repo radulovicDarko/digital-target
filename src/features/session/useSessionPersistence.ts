@@ -2,20 +2,22 @@
  * `useSessionPersistence` — writes a finished session to whichever
  * persistence layer the user opted into:
  *
- *   - logged-in user → POST to remote backend (BackendClient)
+ *   - logged-in user → durable, account-scoped history on this phone
  *   - guest user     → drops the session (no save). Returns "skipped".
- *   - Demo Range     → writes to local SecureStore via demoStorage
- *                       (so demo history survives app cold-starts)
+ *   - Demo Range     → local history, also available to demo guests
  *
  * Returns a single `saveSession` function so callers (LiveSessionScreen,
  * SessionSummaryModal) don't need to know which path was taken.
  */
 import { useCallback } from 'react';
+import { Alert } from 'react-native';
+import { useTranslation } from 'react-i18next';
 
 import { isDemoPairing } from '@/api/demo';
 import { useAuthStore } from '@/state/authStore';
 import { usePairingStore } from '@/state/pairingStore';
 import { logger } from '@/storage/logger';
+import { sessionHistory } from '@/storage/sessionHistory';
 import type { Hit } from '@/types/session';
 
 export type SaveSessionInput = {
@@ -31,30 +33,41 @@ export type SaveSessionInput = {
 };
 
 export type SaveResult =
-  | { kind: 'remote'; ok: boolean }
+  | { kind: 'deviceLocal'; ok: boolean }
   | { kind: 'demoLocal'; ok: boolean }
   | { kind: 'guestSkipped' };
 
 export const useSessionPersistence = () => {
+  const { t } = useTranslation();
   const user = useAuthStore((s) => s.user);
   const guest = useAuthStore((s) => s.guest);
   const active = usePairingStore((s) => s.active);
 
   const saveSession = useCallback(
     async (input: SaveSessionInput): Promise<SaveResult> => {
-      // For now we do NOT persist history anywhere (no SQLite, no demo
-      // storage, no remote backend). We'll introduce a dedicated endpoint
-      // later; this function keeps the call-site stable.
+      const demo = isDemoPairing(active);
+      if (!demo && (guest || !user)) return { kind: 'guestSkipped' };
+      const owner = user?.id ?? 'demo-guest';
+      const kind = demo ? 'demoLocal' : 'deviceLocal';
       try {
-        const who = guest || !user ? 'guest' : 'user';
-        const demo = isDemoPairing(active) ? 'demo' : 'real';
-        void logger.info('persist', `skip saveSession (disabled) who=${who} pairing=${demo} hits=${input.hits.length}`);
+        await sessionHistory.upsert(owner, {
+          id: input.id, shooter_id: owner, discipline: input.discipline,
+          started_at: input.startedAt, ended_at: input.endedAt,
+          total_score: input.totalScore, shot_count: input.shotCount,
+          shots_per_target: input.shotsPerTarget, targets_per_session: input.targetsPerSession,
+          hits: input.hits.map((h) => ({
+            ts: h.ts, x_norm: h.xNorm, y_norm: h.yNorm, score: h.score, ring: h.ring,
+            x_mm: h.xMm, y_mm: h.yMm, dist_mm: h.distMm, is_inner_ten: h.isInnerTen,
+          })),
+        });
+        return { kind, ok: true };
       } catch (e) {
-        void logger.warn('persist', `skip saveSession log failed: ${String(e)}`);
+        void logger.warn('persist', `history save failed: ${String(e)}`);
+        Alert.alert(t('history.saveFailedTitle'), t('history.saveFailedBody'));
+        return { kind, ok: false };
       }
-      return { kind: 'guestSkipped' };
     },
-    [active, guest, user],
+    [active, guest, user, t],
   );
 
   return { saveSession };

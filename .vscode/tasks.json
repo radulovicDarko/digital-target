@@ -1,0 +1,44 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "EAS: iOS production + TestFlight",
+			"type": "shell",
+			"command": "npx",
+			"args": [
+				"--offline",
+				"--yes",
+				"eas-cli",
+				"build",
+				"--platform",
+				"ios",
+				"--profile",
+				"production",
+				"--auto-submit",
+				"--freeze-credentials",
+				"--wait"
+			],
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Pi: deploy calibration workflow",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"C:\\gh\\digital-target\\smokeless-range-software\\deploy.ps1",
+				"-ResultPath",
+				"C:\\Users\\v-darkoradu\\.copilot\\session-state\\9d87c9e6-d620-4f3f-b63f-2a895197abed\\files\\pi-calibration-deploy-result.json"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		}
+	]
+}

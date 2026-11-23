@@ -43,7 +43,6 @@ void i18n.use(initReactI18next).init({
   fallbackLng: fallback,
   interpolation: { escapeValue: false },
   returnNull: false,
-  compatibilityJSON: 'v3',
 });
 
 export default i18n;

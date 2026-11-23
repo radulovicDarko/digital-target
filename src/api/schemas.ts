@@ -56,6 +56,49 @@ export const WsMessageSchema = z.discriminatedUnion('type', [
 export type WsMessage = z.infer<typeof WsMessageSchema>;
 
 // ---- REST responses ----
+const DetectorAvailableSchema = z.object({
+  available: z.literal(true),
+  frame_size: z.tuple([z.number().int().positive(), z.number().int().positive()]),
+  roi: z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative(), z.number().int().positive(), z.number().int().positive()]).nullable(),
+  effective_roi: z.array(z.number()).length(4).optional(),
+  image_points: z.array(z.tuple([z.number().finite(), z.number().finite()])),
+  target_points: z.array(z.tuple([z.number().finite(), z.number().finite()])).length(4),
+  target_size: z.tuple([z.number().positive(), z.number().positive()]),
+  mapping_mode: z.enum(['fixed_center', 'legacy', 'homography']),
+  calibrated: z.boolean(),
+  error: z.string().nullable(),
+  version: z.number().int().nonnegative(),
+  debug: z.boolean(),
+  capture_mode: z.enum(['alignment', 'detection']).optional(),
+  alignment_locked: z.boolean().optional(),
+  preview_hits: z.number().int().nonnegative().optional(),
+  detector: z.object({
+    state: z.string(), reason: z.string(), confirmation: z.number().int().nonnegative(),
+    cooldown: z.number().int().nonnegative(), armed: z.boolean(), refinement: z.string(),
+    rejected: z.array(z.object({ reason: z.string() }).passthrough()),
+  }),
+  camera: z.object({
+    requested: z.record(z.string(), z.unknown()), measured: z.record(z.string(), z.unknown()),
+    controls_supported: z.boolean(),
+  }),
+  processing_ms: z.number().nonnegative().optional(),
+});
+export const DetectorStatusSchema = z.discriminatedUnion('available', [
+  DetectorAvailableSchema,
+  z.object({ available: z.literal(false), error: z.string().optional() }),
+]);
+export type DetectorStatus = z.infer<typeof DetectorStatusSchema>;
+export const supportsDetectorWorkflow = (status: DetectorStatus): boolean =>
+  status.available && status.capture_mode !== undefined
+  && status.alignment_locked !== undefined && status.preview_hits !== undefined;
+export type DetectorCalibrationUpdate = {
+  frame_size: [number, number];
+  version: number;
+  roi?: [number, number, number, number] | null;
+  image_points?: [number, number][];
+  mapping_mode?: 'fixed_center' | 'legacy' | 'homography';
+};
+
 export const HealthSchema = z.object({
   status: z.string(),
   version: z.string(),

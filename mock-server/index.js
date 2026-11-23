@@ -53,6 +53,14 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.get('/api/target/config', (_req, res) => res.json(state.target));
+app.get('/api/detector/status', (_req, res) => res.json({
+  available: false, error: 'Mock backend has no physical camera',
+}));
+app.post([
+  '/api/detector/background/reset', '/api/detector/debug',
+  '/api/detector/calibration', '/api/detector/calibration/aruco',
+  '/api/detector/capture-mode', '/api/detector/preview/clear',
+], (_req, res) => res.status(503).json({ error: 'physical_camera_required' }));
 app.post('/api/target/config', (req, res) => {
   Object.assign(state.target, req.body || {});
   res.json(state.target);

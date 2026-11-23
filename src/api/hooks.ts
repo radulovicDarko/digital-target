@@ -5,8 +5,10 @@ import { useAuthStore } from '@/state/authStore';
 import { usePairingStore } from '@/state/pairingStore';
 import { demoStorage } from '@/storage/demoStorage';
 import { getOrCreateClientId } from '@/storage/clientId';
+import { sessionHistory, type SavedSession } from '@/storage/sessionHistory';
+import { logger } from '@/storage/logger';
 
-import { createBackendClient } from './backend';
+import { createBackendClient, hasRemoteBackend } from './backend';
 import { createApiClient } from './client';
 import { createDemoApiClient, isDemoPairing } from './demo';
 import { queryKeys } from './queryKeys';
@@ -56,7 +58,7 @@ export const useTargetConfigQuery = () => {
 /**
  * Session list — pulled from the right backing store depending on context:
  *   - Demo Range  → local SecureStore (demoStorage)
- *   - Logged-in   → remote BackendClient
+ *   - Logged-in   → phone history, merged with cloud when configured
  *   - Guest       → empty (no history available)
  *
  * The Pi NEVER serves sessions; it's a thin sensor.
@@ -70,11 +72,13 @@ export const useSessionsQuery = (opts: {
   const user = useAuthStore((s) => s.user);
   const guest = useAuthStore((s) => s.guest);
   return useQuery({
-    queryKey: queryKeys.sessions(active?.id ?? 'none', opts),
+    queryKey: [...queryKeys.sessions(active?.id ?? 'none', opts), user?.id ?? 'guest'],
     queryFn: async () => {
       // Demo pairing → local SecureStore.
       if (isDemoPairing(active)) {
-        const all = await demoStorage.load();
+        const legacy = await demoStorage.load();
+        const local = await sessionHistory.load(user?.id ?? 'demo-guest');
+        const all = [...new Map([...legacy, ...local].map((s) => [s.id, s])).values()];
         const filtered = opts.shooterId
           ? all.filter((s) => s.shooter_id === opts.shooterId)
           : all;
@@ -92,17 +96,37 @@ export const useSessionsQuery = (opts: {
             shot_count: s.shot_count,
           })),
           total: sorted.length,
+          source: 'demo' as const,
+          syncError: null,
         };
       }
       // Guest → no history (login to save).
       if (guest || !user) {
-        return { items: [], total: 0 };
+        return { items: [], total: 0, source: 'local' as const, syncError: null };
       }
-      // Logged-in → remote backend.
-      // TODO: token comes from authStore once login flow issues real tokens.
-      const token = (user as { token?: string }).token ?? 'placeholder-token';
-      const client = createBackendClient(token);
-      return client.listSessions({ limit: opts.limit, offset: opts.offset });
+      const local = await sessionHistory.load(user.id);
+      const items = new Map<string, Omit<SavedSession, 'hits'>>(local.map((s) => [s.id, s]));
+      let syncError: string | null = null;
+      let remoteTotal = 0;
+      let source: 'local' | 'cloud' = 'local';
+      if (hasRemoteBackend()) {
+        try {
+          const token = (user as { token?: string }).token ?? 'placeholder-token';
+          const remote = await createBackendClient(token).listSessions({ limit: 200 });
+          for (const s of remote.items) if (!items.has(s.id)) items.set(s.id, s);
+          remoteTotal = remote.total;
+          source = 'cloud';
+        } catch (failure) {
+          syncError = failure instanceof Error ? failure.message : String(failure);
+          void logger.warn('history', `cloud history unavailable: ${syncError}`);
+        }
+      }
+      const sorted = [...items.values()].sort((a, b) => b.started_at - a.started_at);
+      const offset = opts.offset ?? 0;
+      return {
+        items: sorted.slice(offset, offset + (opts.limit ?? 50)),
+        total: Math.max(sorted.length, remoteTotal), source, syncError,
+      };
     },
     enabled: true,
   });
@@ -116,11 +140,13 @@ export const useSessionQuery = (id: string | null) => {
   const user = useAuthStore((s) => s.user);
   const guest = useAuthStore((s) => s.guest);
   return useQuery({
-    queryKey: queryKeys.session(active?.id ?? 'none', id ?? 'none'),
+    queryKey: [...queryKeys.session(active?.id ?? 'none', id ?? 'none'), user?.id ?? 'guest'],
     queryFn: async () => {
       if (!id) throw new Error('No session id');
       if (isDemoPairing(active)) {
-        const all = await demoStorage.load();
+        const legacy = await demoStorage.load();
+        const local = await sessionHistory.load(user?.id ?? 'demo-guest');
+        const all = [...local, ...legacy];
         const s = all.find((x) => x.id === id);
         if (!s) throw new Error('Session not found');
         return {
@@ -139,6 +165,9 @@ export const useSessionQuery = (id: string | null) => {
       if (guest || !user) {
         throw new Error('Guest mode — no session history');
       }
+      const local = (await sessionHistory.load(user.id)).find((s) => s.id === id);
+      if (local) return local;
+      if (!hasRemoteBackend()) throw new Error('Session is not saved on this phone');
       const token = (user as { token?: string }).token ?? 'placeholder-token';
       const client = createBackendClient(token);
       return client.getSession(id);

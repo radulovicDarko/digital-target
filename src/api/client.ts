@@ -8,10 +8,12 @@ import type { Hit } from '@/types/session';
 
 import {
   HealthSchema,
+  DetectorStatusSchema,
   HitSchema,
   PairResponseSchema,
   TargetConfigSchema,
 } from './schemas';
+import type { DetectorCalibrationUpdate } from './schemas';
 
 export class ApiError extends Error {
   constructor(
@@ -26,6 +28,44 @@ export class ApiError extends Error {
 }
 
 const REQUEST_TIMEOUT_MS = 8000;
+
+export const createDetectorCalibrationClient = (baseURL: string, token?: string) => {
+  const http = axios.create({
+    baseURL, timeout: REQUEST_TIMEOUT_MS,
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' },
+  });
+  const command = async (path: string, body: object = {}) => {
+    try {
+      const response = await http.post(path, body);
+      return parse(DetectorStatusSchema, response.data);
+    } catch (error) {
+      const apiError = toApiError(error);
+      if (error instanceof AxiosError && apiError.code === 'server') {
+        const data: unknown = error.response?.data;
+        if (data && typeof data === 'object' && 'detail' in data && typeof data.detail === 'string') {
+          throw new ApiError(data.detail, 'server', error.response?.status, error);
+        }
+      }
+      throw apiError;
+    }
+  };
+  return {
+    async status() {
+      try {
+        const response = await http.get('/api/detector/status');
+        return parse(DetectorStatusSchema, response.data);
+      } catch (error) {
+        throw toApiError(error);
+      }
+    },
+    resetBackground: () => command('/api/detector/background/reset'),
+    clearPreviewHits: () => command('/api/detector/preview/clear'),
+    setCaptureMode: (mode: 'alignment' | 'detection') => command('/api/detector/capture-mode', { mode }),
+    setDebug: (enabled: boolean) => command('/api/detector/debug', { enabled }),
+    updateCalibration: (body: DetectorCalibrationUpdate) => command('/api/detector/calibration', body),
+    calibrateArUco: () => command('/api/detector/calibration/aruco'),
+  };
+};
 
 const parse = <T>(schema: z.ZodSchema<T>, data: unknown): T => {
   const result = schema.safeParse(data);

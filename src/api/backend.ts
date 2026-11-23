@@ -29,6 +29,8 @@ const resolveBaseUrl = (): string => {
   return extra.backendUrl ?? 'https://api.etarget.placeholder';
 };
 
+export const hasRemoteBackend = (): boolean => !resolveBaseUrl().includes('.placeholder');
+
 export type RemoteSession = {
   id: string;
   shooter_id: string;

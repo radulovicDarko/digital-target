@@ -22,8 +22,9 @@
       "channel": "production",
       "autoIncrement": true,
       "ios": {
+        "buildArtifactPaths": ["ios/Podfile.lock"],
         "resourceClass": "m-medium",
-        "image": "latest"
+        "image": "macos-tahoe-26.6-xcode-27.1"
       },
       "android": { "buildType": "app-bundle" }
     }

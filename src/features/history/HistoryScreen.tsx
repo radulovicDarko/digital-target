@@ -14,7 +14,7 @@ import { useSessionsQuery } from '@/api/hooks';
 import { isDemoPairing } from '@/api/demo';
 import { queryKeys } from '@/api/queryKeys';
 import { useRefetchOnFocus } from '@/api/useRefetchOnFocus';
-import { Button, Card, Empty, ErrorState, Loading, Screen, Text } from '@/components';
+import { Button, Card, Empty, Loading, Screen, Text } from '@/components';
 import { useAuthStore } from '@/state/authStore';
 import { useLiveSessionStore } from '@/state/liveSessionStore';
 import { usePairingStore } from '@/state/pairingStore';
@@ -194,13 +194,9 @@ export const HistoryScreen = ({ onOpenSession }: Props) => {
       const bTs = map.get(b)?.[0]?.started_at ?? 0;
       return sort === 'newest' ? bTs - aTs : aTs - bTs;
     });
-    const order = sort === 'newest' ? [...ORDERED, ...monthBuckets] : [...monthBuckets.reverse(), ...[...ORDERED].reverse()];
+    const order = sort === 'newest' ? [...ORDERED, ...monthBuckets] : [...monthBuckets, ...[...ORDERED].reverse()];
     return order.filter((k) => map.has(k)).map((k) => ({ key: k, items: map.get(k)! }));
   }, [filtered, sort]);
-
-  if (sessions.isLoading) return <Loading />;
-  if (sessions.isError)
-    return <ErrorState message={t('errors.network')} onRetry={() => void sessions.refetch()} />;
 
   const total = allItems.length;
   const shown = filtered.length;
@@ -227,6 +223,14 @@ export const HistoryScreen = ({ onOpenSession }: Props) => {
         ) : null}
       </View>
 
+      {!guest ? <Text variant="caption" color="textMuted">{t(sessions.data?.source === 'cloud' ? 'history.localAndCloud' : 'history.localOnly')}</Text> : null}
+      {sessions.isLoading ? <Loading /> : null}
+      {sessions.isError || sessions.data?.syncError ? (
+        <Card>
+          <Text accessibilityRole="alert">{t(sessions.isError ? 'history.loadFailed' : 'history.cloudOffline')}</Text>
+          <Button variant="secondary" onPress={() => void sessions.refetch()}>{t('common.retry')}</Button>
+        </Card>
+      ) : null}
       {/* Search + filter toggle */}
       {total > 0 ? (
         <View style={styles.searchRow}>
@@ -369,7 +373,7 @@ export const HistoryScreen = ({ onOpenSession }: Props) => {
         }
       >
         {total === 0 ? (
-          guest && !isDemoPairing(active) ? (
+          sessions.isLoading || sessions.isError ? null : guest && !isDemoPairing(active) ? (
             // Guest user on a real Range — they have no remote backend
             // account, so history can't sync. Nudge them to sign in.
             <Empty

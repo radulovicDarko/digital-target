@@ -71,9 +71,17 @@ def create_camera_stream(config: Any) -> Any:
             width=getattr(config, "PICAM_WIDTH", 960),
             height=getattr(config, "PICAM_HEIGHT", 540),
             fps=getattr(config, "PICAM_FPS", 60),
+            auto_exposure=config.CAMERA_AUTO_EXPOSURE_ENABLED,
+            exposure_us=config.CAMERA_EXPOSURE_US,
+            analogue_gain=config.CAMERA_ANALOGUE_GAIN,
+            auto_white_balance=config.CAMERA_AUTO_WHITE_BALANCE_ENABLED,
+            colour_gains=config.CAMERA_COLOUR_GAINS,
+            af_mode=config.PICAM_AF_MODE,
+            lens_reset_delta=config.CAMERA_LENS_RESET_DELTA,
         )
 
     if backend == "rtsp":
+        print("[camera] RTSP receiver cannot set exposure/WB; lock them on the source camera.")
         from .ffmpeg_stream import FFmpegStream
         return FFmpegStream(
             ffmpeg_path=config.FFMPEG_PATH,

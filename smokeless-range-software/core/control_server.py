@@ -42,12 +42,23 @@ import socket
 import struct
 import threading
 import time
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlsplit
 
 
 _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+@dataclass
+class DetectorCommand:
+    action: str
+    payload: Dict[str, Any]
+    done: threading.Event = field(default_factory=threading.Event)
+    cancelled: bool = False
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[Exception] = None
 
 
 # --------------------------------------------------------------------------
@@ -67,6 +78,10 @@ class ControlState:
         self._frame_lock = threading.Lock()
         self._jpeg: Optional[bytes] = None
         self._frame_event = threading.Event()
+        self._detector_lock = threading.Lock()
+        self._detector_status: Dict[str, Any] = {"available": False}
+        self._detector_commands: queue.Queue[DetectorCommand] = queue.Queue(maxsize=16)
+        self._raw_jpeg: Optional[bytes] = None
 
         # Per-hit server-side logging ([hit] seq=...). In headless/systemd this
         # can flood journald, so callers (app.py) pass config-driven defaults.
@@ -152,6 +167,49 @@ class ControlState:
         }
 
     # ---- frame I/O ----
+    def update_detector_status(self, status: Dict[str, Any]) -> None:
+        with self._detector_lock:
+            self._detector_status = status
+
+    def detector_status(self) -> Dict[str, Any]:
+        with self._detector_lock:
+            return dict(self._detector_status)
+
+    def request_detector_command(self, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.detector_status().get("available"):
+            raise RuntimeError("Detector camera is unavailable")
+        command = DetectorCommand(action, payload)
+        try:
+            self._detector_commands.put_nowait(command)
+        except queue.Full as exc:
+            raise RuntimeError("Detector command queue is full") from exc
+        if not command.done.wait(4.0):
+            command.cancelled = True
+            raise TimeoutError("Capture thread did not acknowledge the detector command")
+        if command.error is not None:
+            raise command.error
+        if command.result is None:
+            raise RuntimeError("Detector command completed without a result")
+        return command.result
+
+    def consume_detector_commands(self) -> List[DetectorCommand]:
+        commands: List[DetectorCommand] = []
+        while True:
+            try:
+                command = self._detector_commands.get_nowait()
+            except queue.Empty:
+                return commands
+            if not command.cancelled:
+                commands.append(command)
+
+    def push_raw_frame(self, jpeg_bytes: bytes) -> None:
+        with self._frame_lock:
+            self._raw_jpeg = jpeg_bytes
+
+    def get_raw_frame(self) -> Optional[bytes]:
+        with self._frame_lock:
+            return self._raw_jpeg
+
     def push_frame(self, jpeg_bytes: bytes) -> None:
         with self._frame_lock:
             self._jpeg = jpeg_bytes
@@ -552,6 +610,23 @@ class _ControlHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         path = self._split_path()
+        if path == "/api/detector/status":
+            self._json(200, self.state.detector_status())
+            return
+        if path == "/api/detector/snapshot.jpg":
+            self.state.preview_snapshot_polled()
+            jpeg = self.state.get_raw_frame()
+            if jpeg is None:
+                self._json(503, {"error": "camera_frame_unavailable"})
+                return
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(jpeg)))
+            self.end_headers()
+            self.wfile.write(jpeg)
+            return
         if path == "/api/health":
             qs = parse_qs(urlsplit(self.path).query)
             client_id = qs.get("client_id", [None])[0]
@@ -635,6 +710,35 @@ class _ControlHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         path = self._split_path()
+        detector_routes = {
+            "/api/detector/background/reset": "reset",
+            "/api/detector/debug": "debug",
+            "/api/detector/capture-mode": "capture_mode",
+            "/api/detector/preview/clear": "clear_preview",
+            "/api/detector/calibration": "calibration",
+            "/api/detector/calibration/aruco": "aruco",
+        }
+        if path in detector_routes:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 <= length <= 65536:
+                    raise ValueError("Invalid detector payload length")
+                body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+                if not isinstance(body, dict):
+                    raise ValueError("Detector payload must be a JSON object")
+                result = self.state.request_detector_command(detector_routes[path], body)
+            except (ValueError, UnicodeDecodeError) as exc:
+                self._json(400, {"error": "invalid_detector_request", "detail": str(exc)})
+            except TimeoutError as exc:
+                self._json(504, {"error": "detector_timeout", "detail": str(exc)})
+            except RuntimeError as exc:
+                self._json(503, {"error": "detector_unavailable", "detail": str(exc)})
+            except OSError as exc:
+                print(f"[detector] persistence failed: {exc}")
+                self._json(500, {"error": "detector_persistence_failed", "detail": str(exc)})
+            else:
+                self._json(200, result)
+            return
         if path == "/api/pair":
             self._read_json()
             self._json(200, {

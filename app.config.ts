@@ -10,12 +10,6 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   orientation: 'portrait',
   userInterfaceStyle: 'automatic',
   icon: './assets/icon.png',
-  splash: {
-    image: './assets/splash.png',
-    backgroundColor: '#0B0F14',
-    resizeMode: 'contain',
-  },
-  assetBundlePatterns: ['**/*'],
   ios: {
     supportsTablet: true,
     bundleIdentifier: 'com.shooterrange.app',
@@ -53,6 +47,14 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     favicon: './assets/favicon.png',
   },
   plugins: [
+    [
+      'expo-splash-screen',
+      {
+        image: './assets/splash.png',
+        backgroundColor: '#0B0F14',
+        resizeMode: 'contain',
+      },
+    ],
     'expo-secure-store',
     'expo-local-authentication',
     'expo-audio',

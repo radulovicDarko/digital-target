@@ -71,21 +71,21 @@ export const LiveTargetCanvas = ({
 
   // Outer rings (1–6) drawn black on paper.
   const outerRingsPath = useMemo(() => {
-    const path = Skia.Path.Make();
+    const path = Skia.PathBuilder.Make();
     ringsOuterToInner.slice(0, 6).forEach((d) => {
       path.addCircle(half, half, (d * scaleMmToPx) / 2);
     });
-    return path;
+    return path.detach();
   }, [ringsOuterToInner, half, scaleMmToPx]);
 
   // Inner rings (7–10) drawn white on top of the black bull. Ring 7's edge
   // is also drawn so the bull boundary itself reads as a defined line.
   const innerRingsPath = useMemo(() => {
-    const path = Skia.Path.Make();
+    const path = Skia.PathBuilder.Make();
     ringsOuterToInner.slice(6).forEach((d) => {
       path.addCircle(half, half, (d * scaleMmToPx) / 2);
     });
-    return path;
+    return path.detach();
   }, [ringsOuterToInner, half, scaleMmToPx]);
 
   const innerTenRadiusPx = (config.innerTenMm * scaleMmToPx) / 2;
@@ -121,7 +121,7 @@ export const LiveTargetCanvas = ({
 
   return (
     <View style={{ width: size, height: size }}>
-      <Canvas style={StyleSheet.absoluteFillObject}>
+      <Canvas style={StyleSheet.absoluteFill}>
         <Group>
           {/* Square cream paper backdrop (real ISSF 170×170 mm sheet). */}
           <Rect
@@ -164,12 +164,12 @@ export const LiveTargetCanvas = ({
 
           {ellipse ? (
             <Path
-              path={Skia.Path.Make().addOval({
+              path={Skia.PathBuilder.Make().addOval({
                 x: px(ellipse.minXMm),
                 y: px(ellipse.minYMm),
                 width: px(ellipse.maxXMm) - px(ellipse.minXMm),
                 height: px(ellipse.maxYMm) - px(ellipse.minYMm),
-              })}
+              }).detach()}
               style="stroke"
               strokeWidth={1}
               color={theme.colors.info}

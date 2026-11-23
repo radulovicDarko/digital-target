@@ -108,6 +108,10 @@ class RadialScorer:
         # Signed offset from centre, in mm, in CAMERA orientation.
         dx_mm = (x_px - cx) * self._mm_per_px
         dy_mm = (y_px - cy) * self._mm_per_px
+        return self.score_mm(dx_mm, dy_mm, apply_mirror=True)
+
+    def score_mm(self, dx_mm: float, dy_mm: float, *, apply_mirror: bool = False) -> RadialHit:
+        """Score centred world coordinates; homography already defines orientation."""
         dist_mm = math.hypot(dx_mm, dy_mm)
 
         # Pellet-edge rule: a shot counts for ring R if the pellet EDGE reaches
@@ -126,8 +130,8 @@ class RadialScorer:
 
         # Display orientation: undo the behind-the-paper mirror so the plotted
         # hit matches what the shooter sees on the front of the target.
-        disp_x_mm = -dx_mm if self._mirror_x else dx_mm
-        disp_y_mm = -dy_mm if self._mirror_y else dy_mm
+        disp_x_mm = -dx_mm if apply_mirror and self._mirror_x else dx_mm
+        disp_y_mm = -dy_mm if apply_mirror and self._mirror_y else dy_mm
 
         x_norm = _clamp01(0.5 + disp_x_mm / self._paper_span_mm)
         y_norm = _clamp01(0.5 + disp_y_mm / self._paper_span_mm)

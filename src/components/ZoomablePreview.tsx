@@ -1,10 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   Image,
-  type ImageErrorEventData,
-  type ImageLoadEventData,
-  type NativeSyntheticEvent,
+  type ImageErrorEvent,
+  type ImageLoadEvent,
   Pressable,
   StyleSheet,
   View,
@@ -29,8 +29,8 @@ export type ZoomablePreviewProps = {
   topBadge?: { text: string; color: string; icon?: 'lock-closed' | 'flash' };
   /** When true, shows Zoom + / Zoom − buttons next to the reset control. */
   showZoomControls?: boolean;
-  onLoad?: (e: NativeSyntheticEvent<ImageLoadEventData>) => void;
-  onError?: (e: NativeSyntheticEvent<ImageErrorEventData>) => void;
+  onLoad?: (e: ImageLoadEvent) => void;
+  onError?: (e: ImageErrorEvent) => void;
   errorMessage?: string | null;
   accessibilityLabel?: string;
 };
@@ -50,6 +50,7 @@ export const ZoomablePreview = ({
   errorMessage,
   accessibilityLabel,
 }: ZoomablePreviewProps) => {
+  const { t } = useTranslation();
   const theme = useTheme();
   const lastTap = useRef<number>(0);
 
@@ -167,11 +168,11 @@ export const ZoomablePreview = ({
       >
         <GestureDetector gesture={composed}>
           <Animated.View style={[StyleSheet.absoluteFill, animStyle]}>
-            <Pressable style={StyleSheet.absoluteFillObject} onPress={onTap}>
+            <Pressable style={StyleSheet.absoluteFill} onPress={onTap}>
               <Image
                 source={{ uri }}
-                style={StyleSheet.absoluteFillObject}
-                resizeMode="cover"
+                style={StyleSheet.absoluteFill}
+                resizeMode="contain"
                 onLoad={onLoad}
                 onError={onError}
                 accessibilityLabel={accessibilityLabel}
@@ -212,7 +213,7 @@ export const ZoomablePreview = ({
                 style={[styles.ctrlBtn, { backgroundColor: theme.colors.surface }]}
                 onPress={() => zoomStep(1)}
                 hitSlop={6}
-                accessibilityLabel="Zoom in"
+                accessibilityLabel={t('laserCalibration.zoomIn')}
               >
                 <Ionicons name="add" size={18} color={theme.colors.text} />
               </Pressable>
@@ -220,7 +221,7 @@ export const ZoomablePreview = ({
                 style={[styles.ctrlBtn, { backgroundColor: theme.colors.surface }]}
                 onPress={() => zoomStep(-1)}
                 hitSlop={6}
-                accessibilityLabel="Zoom out"
+                accessibilityLabel={t('laserCalibration.zoomOut')}
               >
                 <Ionicons name="remove" size={18} color={theme.colors.text} />
               </Pressable>
@@ -230,7 +231,7 @@ export const ZoomablePreview = ({
             style={[styles.ctrlBtn, { backgroundColor: theme.colors.surface }]}
             onPress={resetZoom}
             hitSlop={6}
-            accessibilityLabel="Reset zoom"
+            accessibilityLabel={t('laserCalibration.zoomReset')}
           >
             <Ionicons name="contract" size={18} color={theme.colors.text} />
           </Pressable>
@@ -241,14 +242,14 @@ export const ZoomablePreview = ({
 };
 
 const styles = StyleSheet.create({
-  root: { width: '100%', aspectRatio: 4 / 3 },
+  root: { width: '100%', aspectRatio: 16 / 9 },
   frame: {
     flex: 1,
     overflow: 'hidden',
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   errorOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     alignItems: 'center',
     justifyContent: 'center',
     padding: 16,
