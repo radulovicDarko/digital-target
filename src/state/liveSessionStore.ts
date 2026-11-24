@@ -8,6 +8,7 @@ type LiveSessionState = {
   sessionId: string | null;
   status: SessionStatus;
   startedAt: number | null;
+  startSeq: number;
   /** Timestamp (ms) of the most recent session end. Used as a refetch signal. */
   lastEndedAt: number;
   /** Hits visible on the current target — including the just-completed series
@@ -37,6 +38,7 @@ type LiveSessionState = {
     id: string,
     startedAt: number,
     format?: { shotsPerTarget: number; targetsPerSession: number },
+    startSeq?: number,
   ) => void;
   setStatus: (s: SessionStatus) => void;
   addHit: (hit: Hit) => void;
@@ -54,6 +56,7 @@ const empty = {
   sessionId: null,
   status: 'idle' as SessionStatus,
   startedAt: null,
+  startSeq: 0,
   lastEndedAt: 0,
   hits: [] as Hit[],
   archivedHits: [] as Hit[],
@@ -75,11 +78,12 @@ export const useLiveSessionStore = create<LiveSessionState>((set) => ({
   showMpi: false,
   showPreview: false,
 
-  setSession: (id, startedAt, format) =>
+  setSession: (id, startedAt, format, startSeq = 0) =>
     set({
       ...empty,
       sessionId: id,
       startedAt,
+      startSeq,
       status: 'running',
       shotsPerTarget: format?.shotsPerTarget ?? 1,
       targetsPerSession: format?.targetsPerSession ?? 9999,
@@ -90,6 +94,7 @@ export const useLiveSessionStore = create<LiveSessionState>((set) => ({
   addHit: (hit) =>
     set((s) => {
       if (s.sessionId && hit.sessionId !== s.sessionId) return s;
+      if (hit.seq != null && hit.seq <= s.startSeq) return s;
       // Drop hits that arrive while the session is paused or already ended.
       if (s.status === 'paused' || s.status === 'ended') return s;
       // Past the configured target count: ignore.
@@ -146,7 +151,8 @@ export const useLiveSessionStore = create<LiveSessionState>((set) => ({
   reconcile: (hits) =>
     set((s) => {
       if (!s.sessionId) return s;
-      const filtered = hits.filter((h) => h.sessionId === s.sessionId);
+      const filtered = hits.filter((h) => h.sessionId === s.sessionId &&
+        (h.seq == null || h.seq > s.startSeq));
       const total = filtered.reduce((acc, h) => acc + h.score, 0);
       const innerTens = filtered.filter((h) => h.isInnerTen).length;
       const shotCount = filtered.length;
@@ -180,6 +186,7 @@ export const useLiveSessionStore = create<LiveSessionState>((set) => ({
       ...empty,
       sessionId: s.sessionId,
       startedAt: s.startedAt,
+      startSeq: s.startSeq,
       status: 'running',
       shotsPerTarget: s.shotsPerTarget,
       targetsPerSession: s.targetsPerSession,

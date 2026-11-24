@@ -12,7 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useQueryClient } from '@tanstack/react-query';
 
 import { useApiClient, useTargetConfigQuery } from '@/api/hooks';
-import type { ApiClient } from '@/api/client';
+import { isDemoPairing } from '@/api/demo';
 import { Card, ErrorState, Loading, Screen, Text } from '@/components';
 import { useLiveSessionStore } from '@/state/liveSessionStore';
 import { usePairingStore } from '@/state/pairingStore';
@@ -22,6 +22,7 @@ import type { Hit } from '@/types/session';
 import { getOrCreateClientId } from '@/storage/clientId';
 
 import { LiveTargetCanvas } from './LiveTargetCanvas';
+import { consumeReplayPage } from './consumeReplayPage';
 import { Scoreboard } from './Scoreboard';
 import { SessionSummaryModal } from './SessionSummaryModal';
 import { ShotTrend } from './ShotTrend';
@@ -93,11 +94,12 @@ export const LiveSessionScreen = ({
   const pausedByConnectionRef = useRef(false);
   const autoEndedRef = useRef(false);
   const lastSeqRef = useRef<number | null>(null);
-  const replayInFlightRef = useRef(false);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollAttemptRef = useRef(0);
   const pollClientIdRef = useRef<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [startFailed, setStartFailed] = useState(false);
+  const [startAttempt, setStartAttempt] = useState(0);
   const [targetAreaWidth, setTargetAreaWidth] = useState(0);
   const [focusedHitTs, setFocusedHitTs] = useState<number | null>(null);
   // The replacement for the OS Alert end-of-session popup. We open it from
@@ -129,49 +131,8 @@ export const LiveSessionScreen = ({
           : { ...h, sessionId: sessionIdRef.current ?? 'pending' };
     if (sessionIdRef.current && patched.sessionId !== sessionIdRef.current) return;
     addHit(patched);
-    void onHitFeedback(h.score, lang);
+    if (useLiveSessionStore.getState().lastHit === patched) void onHitFeedback(h.score, lang);
   }, [addHit, lang]);
-
-  const processHit = useCallback((api: ApiClient, h: Hit): void => {
-    const seq = h.seq;
-    if (seq == null) {
-      acceptHit(h);
-      return;
-    }
-    const last = lastSeqRef.current;
-    if (last == null) {
-      acceptHit(h);
-      lastSeqRef.current = seq;
-      return;
-    }
-    if (seq <= last) return;
-    if (seq === last + 1) {
-      acceptHit(h);
-      lastSeqRef.current = seq;
-      return;
-    }
-    // Gap: backfill via replay. Avoid parallel replays.
-    if (replayInFlightRef.current) return;
-    replayInFlightRef.current = true;
-    void (async () => {
-      try {
-        const replay = await api.replayHits(last, 256);
-        replay.hits.forEach((rh) => {
-          const rseq = rh.seq;
-          if (rseq == null) {
-            acceptHit(rh);
-            return;
-          }
-          const curLast = lastSeqRef.current ?? 0;
-          if (rseq <= curLast) return;
-          acceptHit(rh);
-          lastSeqRef.current = rseq;
-        });
-      } finally {
-        replayInFlightRef.current = false;
-      }
-    })();
-  }, [acceptHit]);
 
   // Start the local session as soon as we land here. The Pi has no
   // concept of sessions any more — it's a thin sensor that just streams
@@ -179,7 +140,21 @@ export const LiveSessionScreen = ({
   // backend (if the user is logged in) will receive the full session
   // record on end.
   useEffect(() => {
-    if (!sessionId) {
+    if (useLiveSessionStore.getState().sessionId || !active || !api) return;
+    let cancelled = false;
+    setStartFailed(false);
+    const start = async () => {
+      let boundary = 0;
+      if (!isDemoPairing(active) && discipline !== DEMO_DISCIPLINE) {
+        const clientId = await getOrCreateClientId();
+        if (cancelled) return;
+        // The Pi retains at most 256 rows. Drain that snapshot BEFORE
+        // showing the target; Pi and phone clocks need not agree.
+        const page = await api.replayHits(0, 256, clientId);
+        if (cancelled) return;
+        boundary = page.hits.reduce((seq, hit) => Math.max(seq, hit.seq ?? 0), 0);
+        pollClientIdRef.current = clientId;
+      }
       // Defensive: only start once. Rerunning would orphan the previous
       // local session before it was saved.
       const baseFmt = formatForDiscipline(discipline);
@@ -190,16 +165,18 @@ export const LiveSessionScreen = ({
       const localId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
       const startedAt = Date.now() / 1000;
       autoEndedRef.current = false;
-      setSession(localId, startedAt, fmt);
-    }
-    return undefined;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [discipline, shotsPerTargetOverride, targetsPerSessionOverride]);
+      lastSeqRef.current = boundary;
+      setSession(localId, startedAt, fmt, boundary);
+    };
+    void start().catch(() => { if (!cancelled) setStartFailed(true); });
+    return () => { cancelled = true; };
+  }, [active, api, discipline, shotsPerTargetOverride, targetsPerSessionOverride, setSession, startAttempt]);
 
   // Poll hits once per second during the live session.
   useEffect(() => {
     if (!active) return undefined;
     if (!api) return undefined;
+    if (isDemoPairing(active) || discipline === DEMO_DISCIPLINE) return undefined;
     if (!sessionId) return undefined;
     if (status === 'ended') return undefined;
 
@@ -218,16 +195,20 @@ export const LiveSessionScreen = ({
           pollClientIdRef.current = await getOrCreateClientId();
         }
         const replay = await api.replayHits(last, 256, pollClientIdRef.current ?? undefined);
+        if (cancelled) return;
         pollAttemptRef.current = 0;
         setReconnecting(false);
         if (pausedByConnectionRef.current && statusRef.current === 'paused') {
           pausedByConnectionRef.current = false;
           setStatus('running');
         }
-        replay.hits.forEach((h) => processHit(api, h));
+        // The response is already the oldest available replay page; a
+        // second consuming request cannot recover a gap in this page.
+        lastSeqRef.current = consumeReplayPage(lastSeqRef.current, replay.hits, acceptHit);
         // Next tick in ~1s.
         schedule(1000);
       } catch {
+        if (cancelled) return;
         // Treat as disconnected: pause + backoff.
         setReconnecting(true);
         if (statusRef.current === 'running') {
@@ -248,7 +229,7 @@ export const LiveSessionScreen = ({
       pollTimerRef.current = null;
     };
     // reconnecting intentionally omitted; tick manages it.
-  }, [active, api, processHit, sessionId, setReconnecting, setStatus, status]);
+  }, [active, api, acceptHit, discipline, sessionId, setReconnecting, setStatus, status]);
 
   // Demo discipline: simulate shots client-side. Pi has no concept of
   // sessions any more, so we feed hits straight into the live store via
@@ -465,6 +446,9 @@ export const LiveSessionScreen = ({
   if (target.isLoading) return <Loading label={t('common.loading')} />;
   if (target.isError || !target.data)
     return <ErrorState message={t('errors.network')} onRetry={() => void target.refetch()} />;
+  if (startFailed)
+    return <ErrorState message={t('errors.network')} onRetry={() => setStartAttempt(n => n + 1)} />;
+  if (!sessionId && status !== 'ended') return <Loading label={t('common.loading')} />;
 
   const config = {
     paperMm: target.data.paper_mm,
