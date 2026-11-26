@@ -604,6 +604,7 @@ def main():
                               fixed_cal["center_offset_y_px"]),
             mirror_x=FIXED_MIRROR_X,
             mirror_y=FIXED_MIRROR_Y,
+            geometry=fixed_cal.get("geometry"),
         )
     radial_scorer = fixed_scorer if target_calibration.mode != "legacy" else None
     if radial_scorer is not None:
@@ -1018,12 +1019,7 @@ def main():
                 if target_calibration.mode == "homography" and target_calibration.matrix is not None:
                     detection_roi, detection_paper_mask = target_calibration.detection_region(detection_roi)
                 if detection_roi is None and target_calibration.mode == "fixed_center":
-                    span = TARGET_PAPER_V2_MM / fixed_cal["mm_per_px"]
-                    cx = frame_w / 2 + fixed_cal["center_offset_x_px"]
-                    cy = frame_h / 2 + fixed_cal["center_offset_y_px"]
-                    rx1, ry1 = max(0, int(cx - span / 2)), max(0, int(cy - span / 2))
-                    rx2, ry2 = min(frame_w, int(math.ceil(cx + span / 2))), min(frame_h, int(math.ceil(cy + span / 2)))
-                    detection_roi = (rx1, ry1, rx2 - rx1, ry2 - ry1)
+                    detection_roi = fixed_scorer.detection_roi(frame_w, frame_h)
             if capture_mode == "alignment" or not camera_settled:
                 detection, mask = None, np.zeros((frame_h, frame_w), dtype=np.uint8)
                 detector.state, detector.reason = (
@@ -1128,13 +1124,18 @@ def main():
                         )
                         cv2.polylines(frame, [ring], True, (255, 180, 0), 1, cv2.LINE_AA)
                 elif target_calibration.mode == "fixed_center":
-                    center = (
-                        int(round(frame_w / 2 + fixed_cal["center_offset_x_px"])),
-                        int(round(frame_h / 2 + fixed_cal["center_offset_y_px"])),
-                    )
-                    for diameter in RING_DIAMETERS_V2_MM:
-                        radius = max(1, int(round(diameter / (2 * fixed_cal["mm_per_px"]))))
-                        cv2.circle(frame, center, radius, (255, 180, 0), 1, cv2.LINE_AA)
+                    if fixed_cal.get("geometry") is not None:
+                        for diameter in RING_DIAMETERS_V2_MM:
+                            ring = np.rint(fixed_scorer.ring_points(diameter, frame_w, frame_h)).astype(np.int32)
+                            cv2.polylines(frame, [ring], True, (255, 180, 0), 1, cv2.LINE_AA)
+                    else:
+                        center = (
+                            int(round(frame_w / 2 + fixed_cal["center_offset_x_px"])),
+                            int(round(frame_h / 2 + fixed_cal["center_offset_y_px"])),
+                        )
+                        for diameter in RING_DIAMETERS_V2_MM:
+                            radius = max(1, int(round(diameter / (2 * fixed_cal["mm_per_px"]))))
+                            cv2.circle(frame, center, radius, (255, 180, 0), 1, cv2.LINE_AA)
 
             if render_overlay:
                 # Draw past hits (pellet-sized circles)

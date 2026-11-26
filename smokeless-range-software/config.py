@@ -205,12 +205,11 @@ PELLET_DIAMETER_MM = 4.5
 # ---------------------------------------------------------------------------
 SCORING_MODE = "fixed_center"  # "legacy" | "fixed_center"
 
-# Physical target used by the fixed-center path. Custom (non-ISSF) face:
-# outer ring 1 = 83 mm, rings step 9 mm in diameter, the 10 is a 2 mm centre
-# dot fused with ring 9. Index 0 = ring 1 (outer) … index 9 = ring 10 (centre).
-# Change these if you print a different face.
-RING_DIAMETERS_V2_MM = (83.0, 74.0, 65.0, 56.0, 47.0, 38.0, 29.0, 20.0, 11.0, 2.0)
-INNER_TEN_V2_MM = 2.0    # the 10 is a 2 mm dot (no separate inner-X ring)
+# Current box uses an ISSF pistol face reduced to an assumed 83 mm outer ring.
+# Preserve ISSF proportions, including the larger ten and black rings 7..10.
+# Confirm the physical outer diameter before relying on millimetre accuracy.
+RING_DIAMETERS_V2_MM = tuple(d * 83.0 / 155.5 for d in RING_DIAMETERS_MM)
+INNER_TEN_V2_MM = INNER_TEN_DIAMETER_MM * 83.0 / 155.5
 PELLET_V2_MM = 4.5       # airgun diabolo — virtual pellet-edge disc
 
 # Millimetres per pixel at the paper plane. Measure once: capture a frame with

@@ -7,7 +7,7 @@ the target from an angle. In the v2 box the Camera Module 3 is mounted
 square-on and centred behind the paper, so the geometry is fixed and known:
 
     * the target centre is the image centre (+ a small per-unit offset),
-    * one millimetre spans a constant number of pixels (``mm_per_px``),
+    * per-box perspective/lens correction is optional,
     * scoring is a pure function of radial distance from that centre.
 
 ``RadialScorer`` turns a detected laser pixel into a fully-scored hit using the
@@ -39,6 +39,64 @@ class RadialHit:
     max_radius_mm: float  # outer ring-1 radius (for miss / off-paper checks)
 
 
+@dataclass(frozen=True)
+class FixedGeometry:
+    """Measured source-pixel correction; shared by scoring and projection."""
+
+    frame_size: tuple[int, int]
+    normalization_px: float = 300.0
+    shear: float = 0.0
+    scale_y: float = 1.0
+    perspective_x: float = 0.0
+    perspective_y: float = 0.0
+    radial_k1: float = 0.0
+
+    def __post_init__(self) -> None:
+        if len(self.frame_size) != 2 or any(type(v) is not int or v <= 0 for v in self.frame_size):
+            raise ValueError("Fixed geometry needs a positive integer frame_size")
+        values = (self.normalization_px, self.shear, self.scale_y,
+                  self.perspective_x, self.perspective_y, self.radial_k1)
+        if not all(math.isfinite(v) for v in values) or min(self.normalization_px, self.scale_y) <= 0:
+            raise ValueError("Invalid fixed perspective/lens correction")
+
+    def correct(self, x: float, y: float) -> tuple[float, float]:
+        radius_sq = (x * x + y * y) / self.normalization_px ** 2
+        factor = 1 + self.radial_k1 * radius_sq
+        if 1 + 3 * self.radial_k1 * radius_sq <= 0:
+            raise ValueError("Fixed lens correction is not invertible at this pixel")
+        x, y = x * factor, y * factor
+        denominator = 1 + (self.perspective_x * x + self.perspective_y * y) / self.normalization_px
+        if denominator <= 0:
+            raise ValueError("Pixel lies beyond the fixed perspective horizon")
+        return (x + self.shear * y) / denominator, self.scale_y * y / denominator
+
+    def uncorrect(self, x: float, y: float) -> tuple[float, float]:
+        y /= self.scale_y
+        x -= self.shear * y
+        denominator = 1 - (self.perspective_x * x + self.perspective_y * y) / self.normalization_px
+        if denominator <= 0:
+            raise ValueError("Target lies beyond the fixed perspective horizon")
+        x, y = x / denominator, y / denominator
+        corrected_radius = math.hypot(x, y) / self.normalization_px
+        if corrected_radius == 0:
+            return 0.0, 0.0
+        radius = corrected_radius
+        for _ in range(20):
+            error = radius * (1 + self.radial_k1 * radius * radius) - corrected_radius
+            if abs(error) < 1e-12:
+                break
+            derivative = 1 + 3 * self.radial_k1 * radius * radius
+            if derivative <= 0:
+                raise ValueError("Target lies outside the invertible lens correction")
+            radius -= error / derivative
+            if radius < 0:
+                raise ValueError("Invalid inverse lens radius")
+        else:
+            raise ValueError("Inverse lens correction did not converge")
+        factor = radius / corrected_radius
+        return x * factor, y * factor
+
+
 def _clamp01(v: float) -> float:
     return max(0.0, min(1.0, v))
 
@@ -66,6 +124,9 @@ class RadialScorer:
     mirror_x, mirror_y:
         Flip the respective display axis (the camera is behind the paper, so
         the horizontal axis is mirrored by default).
+    geometry:
+        Optional measured perspective/lens correction, valid only at its
+        calibrated source dimensions. No correction preserves the old model.
     """
 
     def __init__(
@@ -78,6 +139,7 @@ class RadialScorer:
         center_offset_px=(0.0, 0.0),
         mirror_x=True,
         mirror_y=False,
+        geometry: FixedGeometry | None = None,
     ):
         self._ring_diameters_mm = tuple(float(d) for d in ring_diameters_mm)
         if not self._ring_diameters_mm:
@@ -95,6 +157,12 @@ class RadialScorer:
         self._mirror_x = bool(mirror_x)
         self._mirror_y = bool(mirror_y)
         self._max_radius_mm = self._ring_diameters_mm[0] / 2.0
+        self._geometry = geometry
+        if geometry is not None:
+            width, height = geometry.frame_size
+            for x, y in ((0, 0), (width, 0), (width, height), (0, height)):
+                geometry.correct(x - width / 2 - self._offset_x_px,
+                                 y - height / 2 - self._offset_y_px)
 
     @property
     def max_radius_mm(self) -> float:
@@ -105,10 +173,47 @@ class RadialScorer:
         cx = frame_w / 2.0 + self._offset_x_px
         cy = frame_h / 2.0 + self._offset_y_px
 
-        # Signed offset from centre, in mm, in CAMERA orientation.
-        dx_mm = (x_px - cx) * self._mm_per_px
-        dy_mm = (y_px - cy) * self._mm_per_px
+        self._check_frame(frame_w, frame_h)
+        dx, dy = x_px - cx, y_px - cy
+        if self._geometry is not None:
+            dx, dy = self._geometry.correct(dx, dy)
+        dx_mm, dy_mm = dx * self._mm_per_px, dy * self._mm_per_px
         return self.score_mm(dx_mm, dy_mm, apply_mirror=True)
+
+    def _check_frame(self, width: int, height: int) -> None:
+        if self._geometry is not None and (width, height) != self._geometry.frame_size:
+            raise ValueError("Fixed geometry frame dimensions changed; recalibrate the camera")
+
+    def project_mm(self, x_mm: float, y_mm: float, width: int, height: int) -> tuple[float, float]:
+        """Project camera-oriented target coordinates into original source pixels."""
+        self._check_frame(width, height)
+        x, y = x_mm / self._mm_per_px, y_mm / self._mm_per_px
+        if self._geometry is not None:
+            x, y = self._geometry.uncorrect(x, y)
+        return width / 2 + self._offset_x_px + x, height / 2 + self._offset_y_px + y
+
+    def ring_points(self, diameter_mm: float, width: int, height: int) -> list[tuple[float, float]]:
+        radius = diameter_mm / 2
+        return [
+            self.project_mm(radius * math.cos(i * math.tau / 360),
+                            radius * math.sin(i * math.tau / 360), width, height)
+            for i in range(360)
+        ]
+
+    def detection_roi(self, width: int, height: int) -> tuple[int, int, int, int]:
+        half = self._paper_span_mm / 2
+        points = []
+        for i in range(33):
+            position = -half + 2 * half * i / 32
+            for x, y in ((position, -half), (position, half), (-half, position), (half, position)):
+                points.append(self.project_mm(x, y, width, height))
+        x1 = max(0, int(min(p[0] for p in points)))
+        y1 = max(0, int(min(p[1] for p in points)))
+        x2 = min(width, math.ceil(max(p[0] for p in points)))
+        y2 = min(height, math.ceil(max(p[1] for p in points)))
+        if x2 <= x1 or y2 <= y1:
+            raise ValueError("Fixed target ROI lies outside the camera frame")
+        return x1, y1, x2 - x1, y2 - y1
 
     def score_mm(self, dx_mm: float, dy_mm: float, *, apply_mirror: bool = False) -> RadialHit:
         """Score centred world coordinates; homography already defines orientation."""

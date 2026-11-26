@@ -10,10 +10,13 @@ a 2 mm centre dot; diabolo = 4.5 mm.
 """
 import os
 import sys
+import json
+import math
+import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from core.scoring import RadialScorer  # noqa: E402
+from core.scoring import FixedGeometry, RadialScorer  # noqa: E402
 
 
 RINGS = (83.0, 74.0, 65.0, 56.0, 47.0, 38.0, 29.0, 20.0, 11.0, 2.0)
@@ -131,6 +134,96 @@ def test_invalid_params_raise():
         pass
     else:
         raise AssertionError("expected ValueError for empty ring list")
+
+
+def test_current_print_geometry_and_scoring_agree():
+    from config import RING_DIAMETERS_V2_MM, INNER_TEN_V2_MM
+
+    # Original 960x540 camera frame: centre (448,255), outer diameter ~556 px.
+    s = RadialScorer(
+        RING_DIAMETERS_V2_MM, INNER_TEN_V2_MM, PELLET,
+        83.0 / 556.0, PAPER, center_offset_px=(-32.0, -15.0),
+    )
+    center = s.score(448, 255, 960, 540)
+    assert center.ring == 10 and center.dist_mm == 0.0
+    assert center.x_norm == 0.5 and center.y_norm == 0.5
+    for index, diameter in enumerate(RING_DIAMETERS_V2_MM):
+        radius_px = diameter / (2 * (83.0 / 556.0))
+        # Just inside/outside the pellet-edge reach of each displayed ring.
+        reach_px = radius_px + (PELLET / 2) / (83.0 / 556.0)
+        inside = s.score(448 + reach_px - 0.01, 255, 960, 540)
+        outside = s.score(448 + reach_px + 0.01, 255, 960, 540)
+        assert inside.ring == index + 1
+        assert outside.ring == index
+        assert inside.x_mm < 0  # Behind-paper mirror remains enabled.
+    # The photographed ten spans ~40 px, not the old 2 mm / ~13 px dot.
+    ten_diameter_px = RING_DIAMETERS_V2_MM[-1] / (83.0 / 556.0)
+    assert 38 < ten_diameter_px < 43
+
+
+def test_perspective_lens_projection_preserves_scoring():
+    geometry = FixedGeometry((960, 540), shear=0.002, scale_y=1.013,
+                             perspective_x=-0.016, perspective_y=0.049, radial_k1=-0.009)
+    s = RadialScorer(RINGS, INNER_TEN, PELLET, 0.155, PAPER,
+                     center_offset_px=(-31, -14), geometry=geometry)
+    for ring, diameter in enumerate(RINGS, 1):
+        for degrees in range(0, 360, 30):
+            theta = math.radians(degrees)
+            for delta, expected in ((-0.001, ring), (0.001, ring - 1)):
+                distance = diameter / 2 + PELLET / 2 + delta
+                x, y = distance * math.cos(theta), distance * math.sin(theta)
+                pixel = s.project_mm(x, y, 960, 540)
+                hit = s.score(*pixel, 960, 540)
+                assert hit.ring == expected
+                assert abs(hit.dist_mm - distance) < 1e-8
+                assert abs(hit.x_mm + x) < 1e-8
+                assert abs(hit.y_mm - y) < 1e-8
+    points = s.ring_points(47, 960, 540)
+    assert all(abs(s.score(*p, 960, 540).dist_mm - 23.5) < 1e-8 for p in points)
+    assert abs(points[90][1] + points[270][1] - 2 * 256) > 1
+
+
+def test_corrected_roi_contains_projected_paper_edges():
+    geometry = FixedGeometry((960, 540), perspective_y=0.049, radial_k1=-0.009)
+    s = RadialScorer(RINGS, INNER_TEN, PELLET, 0.18, PAPER, geometry=geometry)
+    x1, y1, width, height = s.detection_roi(960, 540)
+    for i in range(1001):
+        position = -45 + 90 * i / 1000
+        for x, y in ((position, -45), (position, 45), (-45, position), (45, position)):
+            px, py = s.project_mm(x, y, 960, 540)
+            if 0 <= px < 960 and 0 <= py < 540:
+                assert x1 <= px <= x1 + width
+                assert y1 <= py <= y1 + height
+
+
+def test_fixed_profile_rejects_invalid_geometry_and_stale_dimensions():
+    from core.calibration import load_fixed_calibration
+
+    defaults = dict(mm_per_px=0.18, center_offset_x_px=0.0, center_offset_y_px=0.0)
+    with tempfile.TemporaryDirectory() as directory:
+        path = os.path.join(directory, "fixed.json")
+        assert load_fixed_calibration(defaults, path) == defaults
+        for invalid in ({"geometry": {}}, {"geometry": []}, {"mm_per_px": -1},
+                        {"mm_per_px": float("nan")}):
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(invalid, f)
+            try:
+                load_fixed_calibration(defaults, path)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Invalid fixed profile must not silently fall back")
+    s = RadialScorer(RINGS, INNER_TEN, PELLET, 0.18, PAPER,
+                     geometry=FixedGeometry((960, 540)))
+    for operation in (lambda: s.score(400, 300, 800, 600),
+                      lambda: s.ring_points(83, 800, 600),
+                      lambda: s.detection_roi(800, 600)):
+        try:
+            operation()
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Stale camera dimensions must be rejected")
 
 
 if __name__ == "__main__":

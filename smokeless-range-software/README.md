@@ -125,6 +125,25 @@ brise trening sesiju. RTSP nema ove kontrole; izvornu kameru podesiti spolja.
 
 Fixed-center koristi fiksne prstenove: fizicki poklopiti metu sa overlay-em ili
 kalibrisati cetiri reference i koristiti homografiju za perspektivu/razmeru.
+Za kutiju snimljenu 26.11.2026. `fixed_calibration.json` postavlja centar
+na priblizno (448.75, 255.74) u kadru 960x540. Opcioni `geometry` profil
+ispravlja perspektivu, odnos osa, shear i radijalnu deformaciju objektiva.
+Overlay, bodovanje i granice automatskog ROI-ja koriste isto mapiranje;
+bez profila ostaje raniji kruzni fixed-center model.
+Raspored je umanjena ISSF pistolj meta, uz **nepotvrdjenu pretpostavku**
+da je spoljni krug 83 mm. Izmeriti stampu pre provere tacnosti u mm;
+ako precnik nije 83 mm, promeniti fizicke precnike u `config.py` i
+proporcionalno promeniti `mm_per_px`. Profil vazi samo za isti polozaj mete,
+kamere, fokus i dimenzije kadra. Nevalidan sacuvani profil ili druge dimenzije
+se eksplicitno odbijaju, bez tihog prelaska na nekorigovano bodovanje.
+Fit na originalnim kadrovima smanjuje odstupanje linija; debljina stampe,
+sum i deformacija papira onemogucavaju garanciju "100%" fizicke tacnosti.
+Windows deploy sa `.\deploy.ps1 -IncludeFixedCalibration` eksplicitno prenosi
+ovu kalibraciju, proverava checksum i cuva prethodnu u rollback backup-u.
+Bez tog parametra postojeca kalibracija uredjaja ostaje netaknuta.
+Deploy izvrsava udaljenu skriptu iz datoteke (ne iz stdin-a podprocesa),
+ponavlja checksum/health proveru posle restarta i, uz `-ResultPath`,
+snima udaljeni izlaz u dodatnu `.log` datoteku.
 Legacy klizaci i Auto adjust ne menjaju fixed-center bodovanje, pa se prikazuju
 samo u legacy rezimu. `calibrated` u detector status-u oznacava homografiju,
 ne potvrdu operatera; za potvrdu sluze `alignment_locked` i `capture_mode`.

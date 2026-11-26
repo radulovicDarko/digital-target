@@ -39,6 +39,23 @@
 			],
 			"isBackground": false,
 			"problemMatcher": []
+		},
+		{
+			"label": "Pi: deploy new printed box calibration",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"C:\\gh\\digital-target\\smokeless-range-software\\deploy.ps1",
+				"-IncludeFixedCalibration",
+				"-ResultPath",
+				"C:\\Users\\v-darkoradu\\.copilot\\session-state\\4d3af9e9-c9a4-4e78-8fb6-0dc556f1802f\\files\\pi-deploy-result.txt"
+			],
+			"isBackground": false,
+			"problemMatcher": []
 		}
 	]
 }
