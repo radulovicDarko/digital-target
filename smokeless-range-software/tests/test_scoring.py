@@ -226,6 +226,52 @@ def test_fixed_profile_rejects_invalid_geometry_and_stale_dimensions():
             raise AssertionError("Stale camera dimensions must be rejected")
 
 
+def test_offset_paper_edges_and_corners_are_zero_point_hits():
+    bounds = (-57.5, -52.0, 42.5, 48.0)
+    for mirror_x in (False, True):
+        for mirror_y in (False, True):
+            s = RadialScorer(RINGS, INNER_TEN, PELLET, MM_PER_PX, 100,
+                             mirror_x=mirror_x, mirror_y=mirror_y, paper_bounds_mm=bounds)
+            center = s.score(FRAME / 2, FRAME / 2, FRAME, FRAME)
+            assert center.score == 10
+            assert center.x_norm == 0.575 and center.y_norm == 0.52
+            for x, y in ((-57.5, -52), (42.5, -52), (42.5, 48), (-57.5, 48),
+                         (-57.5, 0), (0, -52), (0, 48)):
+                px, py = s.project_mm(-x if mirror_x else x, -y if mirror_y else y, FRAME, FRAME)
+                hit = s.score(px, py, FRAME, FRAME)
+                assert s.on_paper(hit.x_mm, hit.y_mm)
+                assert hit.score == 0 and hit.ring == 0
+                assert abs(hit.x_norm - (x + 57.5) / 100) < 1e-9
+                assert abs(hit.y_norm - (y + 52) / 100) < 1e-9
+            for x, y in ((-57.51, 0), (42.51, 0), (0, -52.01), (0, 48.01)):
+                assert not s.on_paper(x, y)
+
+
+def test_offset_projected_paper_uses_the_same_mirror_as_scoring():
+    geometry = FixedGeometry((960, 540), shear=0.002, scale_y=1.013,
+                             perspective_x=-0.016, perspective_y=0.049, radial_k1=-0.009)
+    s = RadialScorer(RINGS, INNER_TEN, PELLET, 0.155, 100,
+                     geometry=geometry, paper_bounds_mm=(-57.5, -52, 42.5, 48))
+    points = s.paper_points(960, 540)
+    for index, expected in ((0, (-57.5, -52)), (32, (42.5, -52)),
+                            (64, (42.5, 48)), (96, (-57.5, 48))):
+        hit = s.score(*points[index], 960, 540)
+        assert abs(hit.x_mm - expected[0]) < 1e-8
+        assert abs(hit.y_mm - expected[1]) < 1e-8
+    x, y, width, height = s.detection_roi(960, 540)
+    for px, py in points:
+        if 0 <= px < 960 and 0 <= py < 540:
+            assert x <= px <= x + width and y <= py <= y + height
+
+
+def test_detection_roi_includes_the_last_pixel_on_the_paper_edge():
+    s = RadialScorer(RINGS, INNER_TEN, PELLET, MM_PER_PX, 100)
+    x, y, width, height = s.detection_roi(FRAME, FRAME)
+    for px, py in s.paper_points(FRAME, FRAME):
+        assert x <= round(px) < x + width
+        assert y <= round(py) < y + height
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

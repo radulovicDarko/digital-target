@@ -10,8 +10,8 @@ const settings = () => useSettingsStore.getState();
 /**
  * Fire-and-forget feedback for a fresh hit. Returns synchronously so the
  * WS handler can immediately move on to the next pending hit. None of the
- * three subsystems (sound / haptics / speech) blocks; their internal
- * native queues handle ordering on their own threads.
+ * three subsystems (sound / haptics / speech) blocks hit acceptance.
+ * Sound has its own FIFO so every accepted hit gets a complete clip.
  *
  * Used to be `async` + `await`, which meant a 5-shot burst stacked up to
  * ~150 ms of microtask work on the JS thread before the next WS message

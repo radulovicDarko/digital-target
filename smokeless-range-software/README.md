@@ -130,6 +130,14 @@ na priblizno (448.75, 255.74) u kadru 960x540. Opcioni `geometry` profil
 ispravlja perspektivu, odnos osa, shear i radijalnu deformaciju objektiva.
 Overlay, bodovanje i granice automatskog ROI-ja koriste isto mapiranje;
 bez profila ostaje raniji kruzni fixed-center model.
+`TARGET_PAPER_V2_MM=100` pokriva otvor izmedju plasticnih sina, ne siri papir
+u usecima. `FIXED_PAPER_BOUNDS_MM=(-57.5,-52,42.5,48)` definise vidljive granice
+levo/gore/desno/dole u mm, gledano sa strane strelca. Pomak centra od 7.5 mm
+udesno i 2 mm nadole je procenjen sa fotografije; proveriti nakon sledece stampe
+ili pomeranja papira. ROI prati projektovan papir i ogranicen je kadrom kamere.
+Pogoci van bodovanih krugova, ukljucujuci uglove papira, prihvataju se sa 0 poena
+i sivom oznakom; van ovih granica se odbijaju. Mobilni target config dobija
+opcioni `paper_bounds_mm` da prikaz i detekcija koriste isti pomak.
 Raspored je umanjena ISSF pistolj meta, uz **nepotvrdjenu pretpostavku**
 da je spoljni krug 83 mm. Izmeriti stampu pre provere tacnosti u mm;
 ako precnik nije 83 mm, promeniti fizicke precnike u `config.py` i
@@ -175,7 +183,7 @@ REST dodatak (isti control server):
 - `POST /api/detector/background/reset`
 - `POST /api/detector/debug` — `{"enabled": true}`
 - `POST /api/detector/capture-mode` — `{"mode": "alignment"}` ili `"detection"`
-- `POST /api/detector/preview/clear` — samo zute oznake; odgovor sadrzi `preview_hits`
+- `POST /api/detector/preview/clear` — samo oznake pogodaka; odgovor sadrzi `preview_hits`
 - `POST /api/detector/calibration` — `frame_size`, `version`, opciono `roi`,
   `image_points`, `mapping_mode`
 - `POST /api/detector/calibration/aruco`

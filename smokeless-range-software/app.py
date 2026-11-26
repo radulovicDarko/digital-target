@@ -40,6 +40,7 @@ from config import (
     FIXED_CENTER_OFFSET_Y_PX,
     FIXED_MIRROR_X,
     FIXED_MIRROR_Y,
+    FIXED_PAPER_BOUNDS_MM,
     TARGET_PAPER_V2_MM,
     CONTROL_SERVER_ENABLED,
     CONTROL_SERVER_HOST,
@@ -529,7 +530,7 @@ def main():
     last_hit_mm = None
     # Only used for drawing the last few hit markers; keep it bounded so
     # headless/systemd runs don't accumulate unbounded history.
-    hit_history = deque(maxlen=30)  # (x, y)
+    hit_history = deque(maxlen=30)  # (x, y, score)
 
     # Headless log throttle counter.
     hit_log_n = 0
@@ -605,6 +606,7 @@ def main():
             mirror_x=FIXED_MIRROR_X,
             mirror_y=FIXED_MIRROR_Y,
             geometry=fixed_cal.get("geometry"),
+            paper_bounds_mm=FIXED_PAPER_BOUNDS_MM,
         )
     radial_scorer = fixed_scorer if target_calibration.mode != "legacy" else None
     if radial_scorer is not None:
@@ -623,6 +625,8 @@ def main():
                 "inner_ten_mm": float(INNER_TEN_V2_MM),
                 "pellet_mm": float(PELLET_V2_MM),
                 "discipline": f"Custom 83mm ({target_calibration.mode.replace('_', '-')})",
+                **({"paper_bounds_mm": list(fixed_scorer.paper_bounds_mm)}
+                   if target_calibration.mode == "fixed_center" else {}),
             }
         return {
             "paper_mm": float(TARGET_PAPER_MM),
@@ -1020,6 +1024,11 @@ def main():
                     detection_roi, detection_paper_mask = target_calibration.detection_region(detection_roi)
                 if detection_roi is None and target_calibration.mode == "fixed_center":
                     detection_roi = fixed_scorer.detection_roi(frame_w, frame_h)
+                    detection_paper_mask = np.zeros((frame_h, frame_w), dtype=np.uint8)
+                    paper = np.rint(fixed_scorer.paper_points(frame_w, frame_h)).astype(np.int32)
+                    cv2.fillPoly(detection_paper_mask, [paper], 255)
+                    rx, ry, rw, rh = detection_roi
+                    detection_paper_mask = detection_paper_mask[ry:ry + rh, rx:rx + rw]
             if capture_mode == "alignment" or not camera_settled:
                 detection, mask = None, np.zeros((frame_h, frame_w), dtype=np.uint8)
                 detector.state, detector.reason = (
@@ -1141,9 +1150,10 @@ def main():
                 # Draw past hits (pellet-sized circles)
                 scale_px_per_mm = (tx2 - tx1) / TARGET_PAPER_MM if tx2 > tx1 else 1.0
                 pellet_r_px = max(2, int(PELLET_DIAMETER_MM / 2.0 * scale_px_per_mm))
-                for hx, hy in hit_history:
-                    cv2.circle(frame, (hx, hy), pellet_r_px, (0, 255, 255), 1, cv2.LINE_AA)
-                    cv2.circle(frame, (hx, hy), 2, (0, 255, 255), -1, cv2.LINE_AA)
+                for hx, hy, score in hit_history:
+                    color = (128, 128, 128) if score == 0 else (0, 255, 255)
+                    cv2.circle(frame, (hx, hy), pellet_r_px, color, 1, cv2.LINE_AA)
+                    cv2.circle(frame, (hx, hy), 2, color, -1, cv2.LINE_AA)
 
             world_hit = None
             if detection is not None and target_calibration.persistence_error is not None:
@@ -1350,10 +1360,7 @@ def main():
                                 and (dist_mm + pellet_r) <= (INNER_TEN_DIAMETER_MM / 2.0)
                             )
 
-                    # Decide what to do with this detection.
-                    # The "paper area" is roughly a square of side TARGET_PAPER_MM
-                    # around the bull centre. A real shot lands inside that
-                    # area. A noise blob far outside isn't a shot at all.
+                    # Reject outside paper; fixed geometry uses the offset visible opening.
                     ring1_radius_mm = RING_DIAMETERS_MM[0] / 2.0
                     paper_half_mm = TARGET_PAPER_MM / 2.0
                     if radial_scorer is not None:
@@ -1363,9 +1370,10 @@ def main():
                         abs(x_mm_centered) <= paper_half_mm
                         and abs(y_mm_centered) <= paper_half_mm
                     )
-                    # Within ~3mm past ring 1 we still consider it a real but
-                    # missed shot (score 0). Beyond paper bounds it's noise.
+                    # Preserve the legacy radial cutoff, not the fixed/homography corners.
                     is_real_shot = on_paper and hit_dist <= (paper_half_mm + 3.0)
+                    if target_calibration.mode == "fixed_center":
+                        is_real_shot = fixed_scorer.on_paper(x_mm_centered, y_mm_centered)
                     if target_calibration.mode == "homography":
                         is_real_shot = (
                             0 <= wx <= target_calibration.target_size[0]
@@ -1389,7 +1397,7 @@ def main():
                         last_score = hit_score
                         last_dist = hit_dist
                         last_hit_mm = (x_mm_centered, y_mm_centered)
-                        hit_history.append((int(round(raw_x)), int(round(raw_y))))
+                        hit_history.append((int(round(raw_x)), int(round(raw_y)), hit_score))
 
                         # Per-hit console logging can overwhelm journald on headless Pi.
                         # Default behavior is unchanged (enabled, every hit, full format).

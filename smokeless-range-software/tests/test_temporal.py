@@ -387,6 +387,40 @@ class IntegrationTests(unittest.TestCase):
             app.main()
         self.assertEqual(publish.call_count, 1)
 
+    def test_paper_corner_miss_counts_once_then_next_scored_hit_is_accepted(self):
+        import app
+        class Stream:
+            def __init__(self):
+                self.frames = iter(
+                    [background()] * 8 + [pulse(center=(133, 13))] * 3
+                    + [background()] * 12 + [pulse()] * 3 + [background()] * 8
+                )
+            def open(self):
+                return True
+            def read(self):
+                frame = next(self.frames, None)
+                return frame is not None, frame
+            def release(self):
+                pass
+        state = ControlState()
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(app, "create_camera_stream", return_value=Stream()), \
+             patch.object(app, "start_control_server"), \
+             patch.object(app, "ControlState", return_value=state), \
+             patch.object(app, "is_headless", return_value=True), \
+             patch.object(app, "load_fixed_calibration", side_effect=lambda defaults: defaults), \
+             patch.object(app, "FIXED_MM_PER_PX", 1.0), \
+             patch.object(app._config, "DETECTOR_CALIBRATION_FILE", os.path.join(directory, "cal.json")), \
+             patch.object(state, "publish_hit") as publish:
+            app.main()
+        self.assertEqual(publish.call_count, 2)
+        miss, scored = [call.args[0] for call in publish.call_args_list]
+        self.assertEqual((miss["score"], miss["ring"]), (0, 0))
+        self.assertLess(miss["x_mm"], -50)
+        self.assertLess(miss["y_mm"], -45)
+        self.assertTrue(0 < miss["x_norm"] < 1 and 0 < miss["y_norm"] < 1)
+        self.assertEqual(scored["score"], 10)
+
     def test_http_detector_failures_and_original_snapshot(self):
         state = ControlState()
         server = start_control_server(state, host="127.0.0.1", port=0)

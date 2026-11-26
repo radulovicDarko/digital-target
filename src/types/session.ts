@@ -42,6 +42,7 @@ export type SessionSummary = Pick<
 
 export type TargetConfig = {
   paperMm: number;
+  paperBoundsMm?: [number, number, number, number]; // left, top, right, bottom from target centre
   ringDiametersMm: number[]; // [d10, d9, ..., d1]
   innerTenMm: number;
   pelletMm: number;

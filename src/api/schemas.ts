@@ -107,6 +107,9 @@ export const HealthSchema = z.object({
 
 export const TargetConfigSchema = z.object({
   paper_mm: z.number().positive(),
+  paper_bounds_mm: z.tuple([z.number(), z.number(), z.number(), z.number()])
+    .refine(([left, top, right, bottom]) => left < right && top < bottom)
+    .optional(),
   ring_diameters_mm: z.array(z.number().positive()).min(1),
   inner_ten_mm: z.number().positive(),
   pellet_mm: z.number().positive(),

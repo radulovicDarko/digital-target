@@ -230,10 +230,10 @@ FIXED_CENTER_OFFSET_Y_PX = 0.0
 FIXED_MIRROR_X = True
 FIXED_MIRROR_Y = False
 
-# Paper span (mm) reported to the mobile app for the v2 face, so the on-screen
-# rings + hits render at the same scale the Pi scores at. Slightly larger than
-# ring 1 so there's a visible paper margin around the outer ring.
-TARGET_PAPER_V2_MM = 90.0
+# front_v5 has a 100 mm visible opening. The face is approximately 7.5 mm
+# right and 2 mm down from its centre (front view); include the whole opening.
+TARGET_PAPER_V2_MM = 100.0
+FIXED_PAPER_BOUNDS_MM = (-57.5, -52.0, 42.5, 48.0)  # left, top, right, bottom
 
 # ---------------------------------------------------------------------------
 # Mobile control server (HTTP API + MJPEG preview consumed by the React Native

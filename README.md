@@ -97,6 +97,14 @@ does not unlock geometry or delete session scores. Camera diagnostics, ROI,
 homography and ArUco controls are collapsed under Advanced settings; old XY,
 shape and paper sliders appear only in the actual legacy mapping mode.
 
+Live hits are polled one second after each completed replay request, without
+overlapping requests or changing camera detection thresholds. Every new accepted
+hit, including a zero-point miss, requests a sound when Sound is enabled.
+Batched hits play complete shot clips in FIFO order; initialization no longer
+drops the first hit. Very fast firing can leave a short audible queue.
+Optional `paper_bounds_mm` from the Pi places rings and hits consistently within
+an offset visible opening; older target configurations remain centered.
+
 Finished authenticated sessions are saved on the phone in account-scoped
 document files. Two alternating files and a small SecureStore commit pointer
 keep the previous history intact if a write fails. Writes are serialized and

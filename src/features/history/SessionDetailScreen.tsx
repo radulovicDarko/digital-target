@@ -120,6 +120,7 @@ export const SessionDetailScreen = ({ sessionId, onClose }: Props) => {
   const config = target.data
     ? {
         paperMm: target.data.paper_mm,
+        paperBoundsMm: target.data.paper_bounds_mm,
         ringDiametersMm: target.data.ring_diameters_mm,
         innerTenMm: target.data.inner_ten_mm,
         pelletMm: target.data.pellet_mm,

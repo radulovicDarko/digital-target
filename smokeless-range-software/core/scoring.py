@@ -33,8 +33,8 @@ class RadialHit:
     dist_mm: float        # radial distance of the laser CENTRE from target centre
     x_mm: float           # centred, display-oriented (mirror applied), +x = right
     y_mm: float           # centred, display-oriented, +y = down
-    x_norm: float         # 0..1 across the reported paper span (0.5 = centre)
-    y_norm: float         # 0..1 across the reported paper span (0.5 = centre)
+    x_norm: float         # 0..1 across the visible paper bounds
+    y_norm: float         # 0..1 across the visible paper bounds
     is_inner_ten: bool    # pellet fully inside the inner-ten dot
     max_radius_mm: float  # outer ring-1 radius (for miss / off-paper checks)
 
@@ -127,6 +127,9 @@ class RadialScorer:
     geometry:
         Optional measured perspective/lens correction, valid only at its
         calibrated source dimensions. No correction preserves the old model.
+    paper_bounds_mm:
+        Optional visible opening (left, top, right, bottom), relative to the
+        target centre in shooter orientation. Defaults to a centred square.
     """
 
     def __init__(
@@ -140,6 +143,7 @@ class RadialScorer:
         mirror_x=True,
         mirror_y=False,
         geometry: FixedGeometry | None = None,
+        paper_bounds_mm: tuple[float, float, float, float] | None = None,
     ):
         self._ring_diameters_mm = tuple(float(d) for d in ring_diameters_mm)
         if not self._ring_diameters_mm:
@@ -152,6 +156,11 @@ class RadialScorer:
         self._pellet_r_mm = float(pellet_mm) / 2.0
         self._mm_per_px = float(mm_per_px)
         self._paper_span_mm = float(paper_span_mm)
+        half = self._paper_span_mm / 2
+        self.paper_bounds_mm = paper_bounds_mm or (-half, -half, half, half)
+        left, top, right, bottom = self.paper_bounds_mm
+        if not all(math.isfinite(v) for v in self.paper_bounds_mm) or left >= right or top >= bottom:
+            raise ValueError("Visible paper bounds must be finite and ordered")
         self._offset_x_px = float(center_offset_px[0])
         self._offset_y_px = float(center_offset_px[1])
         self._mirror_x = bool(mirror_x)
@@ -200,20 +209,33 @@ class RadialScorer:
             for i in range(360)
         ]
 
-    def detection_roi(self, width: int, height: int) -> tuple[int, int, int, int]:
-        half = self._paper_span_mm / 2
+    def paper_points(self, width: int, height: int) -> list[tuple[float, float]]:
+        left, top, right, bottom = self.paper_bounds_mm
+        corners = ((left, top), (right, top), (right, bottom), (left, bottom))
         points = []
-        for i in range(33):
-            position = -half + 2 * half * i / 32
-            for x, y in ((position, -half), (position, half), (-half, position), (half, position)):
-                points.append(self.project_mm(x, y, width, height))
+        for edge in range(4):
+            x1, y1 = corners[edge]
+            x2, y2 = corners[(edge + 1) % 4]
+            for i in range(32):
+                x = x1 + (x2 - x1) * i / 32
+                y = y1 + (y2 - y1) * i / 32
+                points.append(self.project_mm(-x if self._mirror_x else x,
+                                              -y if self._mirror_y else y, width, height))
+        return points
+
+    def detection_roi(self, width: int, height: int) -> tuple[int, int, int, int]:
+        points = self.paper_points(width, height)
         x1 = max(0, int(min(p[0] for p in points)))
         y1 = max(0, int(min(p[1] for p in points)))
-        x2 = min(width, math.ceil(max(p[0] for p in points)))
-        y2 = min(height, math.ceil(max(p[1] for p in points)))
+        x2 = min(width, math.ceil(max(p[0] for p in points)) + 1)
+        y2 = min(height, math.ceil(max(p[1] for p in points)) + 1)
         if x2 <= x1 or y2 <= y1:
             raise ValueError("Fixed target ROI lies outside the camera frame")
         return x1, y1, x2 - x1, y2 - y1
+
+    def on_paper(self, x_mm: float, y_mm: float) -> bool:
+        left, top, right, bottom = self.paper_bounds_mm
+        return left <= x_mm <= right and top <= y_mm <= bottom
 
     def score_mm(self, dx_mm: float, dy_mm: float, *, apply_mirror: bool = False) -> RadialHit:
         """Score centred world coordinates; homography already defines orientation."""
@@ -238,8 +260,9 @@ class RadialScorer:
         disp_x_mm = -dx_mm if apply_mirror and self._mirror_x else dx_mm
         disp_y_mm = -dy_mm if apply_mirror and self._mirror_y else dy_mm
 
-        x_norm = _clamp01(0.5 + disp_x_mm / self._paper_span_mm)
-        y_norm = _clamp01(0.5 + disp_y_mm / self._paper_span_mm)
+        left, top, right, bottom = self.paper_bounds_mm
+        x_norm = _clamp01((disp_x_mm - left) / (right - left))
+        y_norm = _clamp01((disp_y_mm - top) / (bottom - top))
 
         return RadialHit(
             ring=ring,

@@ -50,19 +50,24 @@ export const LiveTargetCanvas = ({
     [config.ringDiametersMm],
   );
 
-  // Reference diameter = the ISSF paper edge (170 mm for 10 m air pistol).
-  // The paper is what the camera frames, so scaling to it gives a true 1:1
-  // visual match with the Python detector view.
+  // The visible opening can be offset from the scoring centre.
   const referenceMm = config.paperMm > 0 ? config.paperMm : ringsOuterToInner[0] ?? 1;
-  const scaleMmToPx = useMemo(() => (size * 0.98) / referenceMm, [size, referenceMm]);
+  const [left, top, right, bottom] = config.paperBoundsMm ??
+    [-referenceMm / 2, -referenceMm / 2, referenceMm / 2, referenceMm / 2];
+  const widthMm = right - left;
+  const heightMm = bottom - top;
+  const scaleMmToPx = (size * 0.98) / Math.max(widthMm, heightMm);
 
-  const half = size / 2;
-  const px = (mm: number) => half + mm * scaleMmToPx;
+  const centerX = size / 2 - (left + right) / 2 * scaleMmToPx;
+  const centerY = size / 2 - (top + bottom) / 2 * scaleMmToPx;
+  const px = (mm: number) => centerX + mm * scaleMmToPx;
+  const py = (mm: number) => centerY + mm * scaleMmToPx;
 
-  // The cream paper itself — square, sized to paperMm.
-  const paperSidePx = referenceMm * scaleMmToPx;
-  const paperX = half - paperSidePx / 2;
-  const paperY = half - paperSidePx / 2;
+  // Paper follows the same visible bounds used by the detector.
+  const paperWidthPx = widthMm * scaleMmToPx;
+  const paperHeightPx = heightMm * scaleMmToPx;
+  const paperX = px(left);
+  const paperY = py(top);
 
   // Bull = circle filled to ring 7's outer edge. With 10 rings, ring 7's
   // outer edge is index 6 in the sorted array.
@@ -73,20 +78,20 @@ export const LiveTargetCanvas = ({
   const outerRingsPath = useMemo(() => {
     const path = Skia.PathBuilder.Make();
     ringsOuterToInner.slice(0, 6).forEach((d) => {
-      path.addCircle(half, half, (d * scaleMmToPx) / 2);
+      path.addCircle(centerX, centerY, (d * scaleMmToPx) / 2);
     });
     return path.detach();
-  }, [ringsOuterToInner, half, scaleMmToPx]);
+  }, [ringsOuterToInner, centerX, centerY, scaleMmToPx]);
 
   // Inner rings (7–10) drawn white on top of the black bull. Ring 7's edge
   // is also drawn so the bull boundary itself reads as a defined line.
   const innerRingsPath = useMemo(() => {
     const path = Skia.PathBuilder.Make();
     ringsOuterToInner.slice(6).forEach((d) => {
-      path.addCircle(half, half, (d * scaleMmToPx) / 2);
+      path.addCircle(centerX, centerY, (d * scaleMmToPx) / 2);
     });
     return path.detach();
-  }, [ringsOuterToInner, half, scaleMmToPx]);
+  }, [ringsOuterToInner, centerX, centerY, scaleMmToPx]);
 
   const innerTenRadiusPx = (config.innerTenMm * scaleMmToPx) / 2;
   const hitRadiusPx = Math.max(2, (config.pelletMm * scaleMmToPx) / 2);
@@ -123,17 +128,17 @@ export const LiveTargetCanvas = ({
     <View style={{ width: size, height: size }}>
       <Canvas style={StyleSheet.absoluteFill}>
         <Group>
-          {/* Square cream paper backdrop (real ISSF 170×170 mm sheet). */}
+          {/* Visible paper backdrop. */}
           <Rect
             x={paperX}
             y={paperY}
-            width={paperSidePx}
-            height={paperSidePx}
+            width={paperWidthPx}
+            height={paperHeightPx}
             color={PAPER_COLOR}
           />
 
           {/* Black bull (filled to ring 7 outer edge). */}
-          <Circle cx={half} cy={half} r={bullRadiusPx} color={BULL_COLOR} />
+          <Circle cx={centerX} cy={centerY} r={bullRadiusPx} color={BULL_COLOR} />
 
           {/* Outer rings 1–6 in black on paper. */}
           <Path
@@ -153,22 +158,22 @@ export const LiveTargetCanvas = ({
 
           {/* Inner-X dot (the small central highlight). */}
           <Circle
-            cx={half}
-            cy={half}
+            cx={centerX}
+            cy={centerY}
             r={innerTenRadiusPx}
             color={WHITE_LINE}
             style="stroke"
             strokeWidth={1}
           />
-          <Circle cx={half} cy={half} r={1.5} color={WHITE_LINE} />
+          <Circle cx={centerX} cy={centerY} r={1.5} color={WHITE_LINE} />
 
           {ellipse ? (
             <Path
               path={Skia.PathBuilder.Make().addOval({
                 x: px(ellipse.minXMm),
-                y: px(ellipse.minYMm),
+                y: py(ellipse.minYMm),
                 width: px(ellipse.maxXMm) - px(ellipse.minXMm),
-                height: px(ellipse.maxYMm) - px(ellipse.minYMm),
+                height: py(ellipse.maxYMm) - py(ellipse.minYMm),
               }).detach()}
               style="stroke"
               strokeWidth={1}
@@ -178,9 +183,9 @@ export const LiveTargetCanvas = ({
 
           {mpi ? (
             <Group
-              transform={[{ translateX: px(mpi.x) - half }, { translateY: px(mpi.y) - half }]}
+              transform={[{ translateX: px(mpi.x) - centerX }, { translateY: py(mpi.y) - centerY }]}
             >
-              <Circle cx={half} cy={half} r={4} color={theme.colors.warning} />
+              <Circle cx={centerX} cy={centerY} r={4} color={theme.colors.warning} />
             </Group>
           ) : null}
 
@@ -191,7 +196,7 @@ export const LiveTargetCanvas = ({
           {hits.map((h, i) => {
             if (highlightTs !== null && h.ts === highlightTs) return null;
             const cx = px(h.xMm);
-            const cy = px(h.yMm);
+            const cy = py(h.yMm);
             const color = theme.colors.ringPalette[h.ring] ?? theme.colors.text;
             return (
               <Group key={`${h.ts}-${i}`}>
@@ -214,7 +219,7 @@ export const LiveTargetCanvas = ({
                 const focused = hits.find((h) => h.ts === highlightTs);
                 if (!focused) return null;
                 const cx = px(focused.xMm);
-                const cy = px(focused.yMm);
+                const cy = py(focused.yMm);
                 const color = theme.colors.ringPalette[focused.ring] ?? theme.colors.text;
                 return (
                   <Group key={`focus-${focused.ts}`}>
@@ -267,10 +272,10 @@ export const LiveTargetCanvas = ({
         // for top/bottom. Subtract half the box dimensions so the visual
         // centre of the digit lands exactly on the radial position.
         const positions = [
-          { left: half - l.rPx - labelBox / 2, top: half - labelBox / 2 }, // W
-          { left: half + l.rPx - labelBox / 2, top: half - labelBox / 2 }, // E
-          { left: half - labelBox / 2, top: half - l.rPx - labelBox / 2 }, // N
-          { left: half - labelBox / 2, top: half + l.rPx - labelBox / 2 }, // S
+          { left: centerX - l.rPx - labelBox / 2, top: centerY - labelBox / 2 }, // W
+          { left: centerX + l.rPx - labelBox / 2, top: centerY - labelBox / 2 }, // E
+          { left: centerX - labelBox / 2, top: centerY - l.rPx - labelBox / 2 }, // N
+          { left: centerX - labelBox / 2, top: centerY + l.rPx - labelBox / 2 }, // S
         ];
         return (
           <View key={`labels-${l.ring}`} pointerEvents="none">
